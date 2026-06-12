@@ -14,6 +14,8 @@ namespace PedestrianCrossingToolkit
         private static readonly CrossingPathBuilder.SignalControllerDebugSnapshot[] SignalDebugRenderBuffer = new CrossingPathBuilder.SignalControllerDebugSnapshot[128];
         private static readonly CrossingPlacementAsset[] CrossingHighlightRenderBuffer = new CrossingPlacementAsset[2048];
         private static readonly CrossingPlacementAsset[] ValidationProblemRenderBuffer = new CrossingPlacementAsset[512];
+        private static readonly CrossingPlacementRecord[] AutoScanPreviewRenderBuffer = new CrossingPlacementRecord[CrossingAutoScanPlanner.MaxPlannedPlacements];
+        private static readonly int[] AutoScanPreviewIndexRenderBuffer = new int[CrossingAutoScanPlanner.MaxPlannedPlacements];
         private static readonly List<string> ConnectorRenderKeys = new List<string>();
         private static readonly List<string> ConnectivityRenderKeys = new List<string>();
         private static readonly List<GameObject> RouteWorldVisuals = new List<GameObject>();
@@ -52,12 +54,22 @@ namespace PedestrianCrossingToolkit
         private static Material _subwayLinkHighlightWorldMaterial;
         private static Material _subwayPointHighlightWorldMaterial;
         private static Material _bridgeHighlightWorldMaterial;
+        private static Material _midBlockAutoScanPreviewWorldMaterial;
+        private static Material _signalAutoScanPreviewWorldMaterial;
+        private static Material _subwayLinkAutoScanPreviewWorldMaterial;
+        private static Material _subwayPointAutoScanPreviewWorldMaterial;
+        private static Material _bridgeAutoScanPreviewWorldMaterial;
         private static Material _validationProblemWorldMaterial;
         private static Texture2D _midBlockCrossingLocationIconTexture;
         private static Texture2D _signalCrossingLocationIconTexture;
         private static Texture2D _subwayLinkCrossingLocationIconTexture;
         private static Texture2D _subwayPointCrossingLocationIconTexture;
         private static Texture2D _bridgeCrossingLocationIconTexture;
+        private static Texture2D _midBlockAutoScanPreviewIconTexture;
+        private static Texture2D _signalAutoScanPreviewIconTexture;
+        private static Texture2D _subwayLinkAutoScanPreviewIconTexture;
+        private static Texture2D _subwayPointAutoScanPreviewIconTexture;
+        private static Texture2D _bridgeAutoScanPreviewIconTexture;
         private static Texture2D _validationProblemIconTexture;
         private const int CrossingLocationIconTextureSize = 96;
         private const float CrossingLocationIconMinWorldSize = 14f;
@@ -74,6 +86,7 @@ namespace PedestrianCrossingToolkit
         private PedestrianToolMode _highlightCachedMode = PedestrianToolMode.None;
         private int _highlightCachedCount;
         private int _validationProblemCachedRevision = -1;
+        private int _autoScanPreviewCachedRevision = -1;
         private static int _signalDebugCachedCount;
 
         public static void CreateIfNeeded(UIView view)
@@ -134,15 +147,18 @@ namespace PedestrianCrossingToolkit
 
             bool showCrossingHighlights = ShouldShowCrossingHighlights(camera, PedestrianCrossingToolkitState.ActiveMode);
             bool showValidationProblems = ShouldShowValidationProblemHighlights(camera);
+            bool showAutoScanPreview = ShouldShowAutoScanPreviewHighlights(camera);
             int validationProblemRevision = PedestrianCrossingToolkitState.ValidationProblemRevision;
-            if (showCrossingHighlights || showValidationProblems)
+            int autoScanPreviewRevision = PedestrianCrossingToolkitState.AutoScanPreviewRevision;
+            if (showCrossingHighlights || showValidationProblems || showAutoScanPreview)
             {
                 _highlightWorldVisualTimer += Time.unscaledDeltaTime;
                 if (_highlightWorldVisualTimer >= HighlightRefreshSeconds
-                    || _validationProblemCachedRevision != validationProblemRevision)
+                    || _validationProblemCachedRevision != validationProblemRevision
+                    || _autoScanPreviewCachedRevision != autoScanPreviewRevision)
                 {
                     _highlightWorldVisualTimer = 0f;
-                    RebuildCrossingHighlightWorldVisuals(camera, showCrossingHighlights, showValidationProblems);
+                    RebuildCrossingHighlightWorldVisuals(camera, showCrossingHighlights, showValidationProblems, showAutoScanPreview);
                 }
             }
             else
@@ -150,6 +166,7 @@ namespace PedestrianCrossingToolkit
                 ClearCrossingHighlightWorldVisuals();
                 _highlightWorldVisualTimer = 0f;
                 _validationProblemCachedRevision = validationProblemRevision;
+                _autoScanPreviewCachedRevision = autoScanPreviewRevision;
             }
         }
 
@@ -347,6 +364,11 @@ namespace PedestrianCrossingToolkit
         private static bool ShouldShowValidationProblemHighlights(Camera camera)
         {
             return camera != null && PedestrianCrossingToolkitState.HasValidationProblemAssets;
+        }
+
+        private static bool ShouldShowAutoScanPreviewHighlights(Camera camera)
+        {
+            return camera != null && PedestrianCrossingToolkitState.HasAutoScanPreviewPlan;
         }
 
         private static void DrawCrossingHighlight(Camera camera, CrossingPlacementAsset asset, Rect[] hideRects, bool hasPanel, Rect panelRect)
@@ -636,7 +658,7 @@ namespace PedestrianCrossingToolkit
             }
         }
 
-        private void RebuildCrossingHighlightWorldVisuals(Camera camera, bool includeCrossingHighlights, bool includeValidationProblems)
+        private void RebuildCrossingHighlightWorldVisuals(Camera camera, bool includeCrossingHighlights, bool includeValidationProblems, bool includeAutoScanPreview)
         {
             ClearCrossingHighlightWorldVisuals();
 
@@ -659,6 +681,21 @@ namespace PedestrianCrossingToolkit
             List<Vector3> validationProblemVertices = new List<Vector3>();
             List<Vector2> validationProblemUvs = new List<Vector2>();
             List<int> validationProblemTriangles = new List<int>();
+            List<Vector3> previewMidBlockVertices = new List<Vector3>();
+            List<Vector2> previewMidBlockUvs = new List<Vector2>();
+            List<int> previewMidBlockTriangles = new List<int>();
+            List<Vector3> previewSignalVertices = new List<Vector3>();
+            List<Vector2> previewSignalUvs = new List<Vector2>();
+            List<int> previewSignalTriangles = new List<int>();
+            List<Vector3> previewSubwayLinkVertices = new List<Vector3>();
+            List<Vector2> previewSubwayLinkUvs = new List<Vector2>();
+            List<int> previewSubwayLinkTriangles = new List<int>();
+            List<Vector3> previewSubwayPointVertices = new List<Vector3>();
+            List<Vector2> previewSubwayPointUvs = new List<Vector2>();
+            List<int> previewSubwayPointTriangles = new List<int>();
+            List<Vector3> previewBridgeVertices = new List<Vector3>();
+            List<Vector2> previewBridgeUvs = new List<Vector2>();
+            List<int> previewBridgeTriangles = new List<int>();
 
             if (includeCrossingHighlights)
             {
@@ -706,6 +743,54 @@ namespace PedestrianCrossingToolkit
             AddCrossingHighlightWorldVisual(PedestrianToolMode.SubwayPointToPoint, subwayPointVertices, subwayPointUvs, subwayPointTriangles);
             AddCrossingHighlightWorldVisual(PedestrianToolMode.PedestrianBridge, bridgeVertices, bridgeUvs, bridgeTriangles);
 
+            if (includeAutoScanPreview)
+            {
+                int previewCount = PedestrianCrossingToolkitState.CopyAutoScanPreviewPlacementsTo(AutoScanPreviewRenderBuffer, AutoScanPreviewIndexRenderBuffer);
+                for (int i = 0; i < previewCount; i++)
+                {
+                    CrossingPlacementRecord placement = AutoScanPreviewRenderBuffer[i];
+                    AutoScanPreviewRenderBuffer[i] = CrossingPlacementRecord.None;
+                    CrossingPlacementPlan plan = CrossingPlacementPlanner.Build(placement);
+                    if (!placement.IsValid || !plan.IsValid || !IsAutoScanPreviewInCameraView(camera, placement, plan))
+                        continue;
+
+                    List<Vector3> vertices;
+                    List<Vector2> uvs;
+                    List<int> triangles;
+                    if (!TryGetHighlightWorldMeshLists(
+                        placement.Mode,
+                        previewMidBlockVertices,
+                        previewMidBlockUvs,
+                        previewMidBlockTriangles,
+                        previewSignalVertices,
+                        previewSignalUvs,
+                        previewSignalTriangles,
+                        previewSubwayLinkVertices,
+                        previewSubwayLinkUvs,
+                        previewSubwayLinkTriangles,
+                        previewSubwayPointVertices,
+                        previewSubwayPointUvs,
+                        previewSubwayPointTriangles,
+                        previewBridgeVertices,
+                        previewBridgeUvs,
+                        previewBridgeTriangles,
+                        out vertices,
+                        out uvs,
+                        out triangles))
+                    {
+                        continue;
+                    }
+
+                    AddAutoScanPreviewIconGeometry(camera, plan, vertices, uvs, triangles);
+                }
+            }
+
+            AddAutoScanPreviewWorldVisual(PedestrianToolMode.MidBlockCrossing, previewMidBlockVertices, previewMidBlockUvs, previewMidBlockTriangles);
+            AddAutoScanPreviewWorldVisual(PedestrianToolMode.SignalCrossing, previewSignalVertices, previewSignalUvs, previewSignalTriangles);
+            AddAutoScanPreviewWorldVisual(PedestrianToolMode.SubwayLink, previewSubwayLinkVertices, previewSubwayLinkUvs, previewSubwayLinkTriangles);
+            AddAutoScanPreviewWorldVisual(PedestrianToolMode.SubwayPointToPoint, previewSubwayPointVertices, previewSubwayPointUvs, previewSubwayPointTriangles);
+            AddAutoScanPreviewWorldVisual(PedestrianToolMode.PedestrianBridge, previewBridgeVertices, previewBridgeUvs, previewBridgeTriangles);
+
             if (includeValidationProblems)
             {
                 int problemCount = PedestrianCrossingToolkitState.CopyValidationProblemAssetsTo(ValidationProblemRenderBuffer);
@@ -722,6 +807,7 @@ namespace PedestrianCrossingToolkit
 
             AddValidationProblemWorldVisual(validationProblemVertices, validationProblemUvs, validationProblemTriangles);
             _validationProblemCachedRevision = PedestrianCrossingToolkitState.ValidationProblemRevision;
+            _autoScanPreviewCachedRevision = PedestrianCrossingToolkitState.AutoScanPreviewRevision;
         }
 
         private static bool TryGetHighlightWorldMeshLists(
@@ -791,6 +877,16 @@ namespace PedestrianCrossingToolkit
             AddWorldBillboardIcon(vertices, uvs, triangles, center, camera.transform.right, camera.transform.up, size);
         }
 
+        private static void AddAutoScanPreviewIconGeometry(Camera camera, CrossingPlacementPlan plan, List<Vector3> vertices, List<Vector2> uvs, List<int> triangles)
+        {
+            if (!plan.IsValid || camera == null)
+                return;
+
+            float size = GetCrossingLocationIconWorldSize(camera) * 1.08f;
+            Vector3 center = ToStreetPreview(plan.Center) + Vector3.up * Mathf.Clamp(size * 0.88f, 10f, 24f);
+            AddWorldBillboardIcon(vertices, uvs, triangles, center, camera.transform.right, camera.transform.up, size);
+        }
+
         private static void AddValidationProblemIconGeometry(Camera camera, CrossingPlacementAsset asset, List<Vector3> vertices, List<Vector2> uvs, List<int> triangles)
         {
             if (camera == null)
@@ -814,6 +910,14 @@ namespace PedestrianCrossingToolkit
         private static bool IsValidationProblemInCameraView(Camera camera, CrossingPlacementAsset asset)
         {
             return IsWorldPointInCameraView(camera, GetValidationProblemBasePosition(asset));
+        }
+
+        private static bool IsAutoScanPreviewInCameraView(Camera camera, CrossingPlacementRecord placement, CrossingPlacementPlan plan)
+        {
+            return IsWorldPointInCameraView(camera, plan.Center)
+                   || IsWorldPointInCameraView(camera, plan.LeftEdge)
+                   || IsWorldPointInCameraView(camera, plan.RightEdge)
+                   || (placement.HasSecondaryPoint && IsWorldPointInCameraView(camera, placement.SecondaryWorldPosition));
         }
 
         private static Vector3 GetValidationProblemBasePosition(CrossingPlacementAsset asset)
@@ -936,6 +1040,27 @@ namespace PedestrianCrossingToolkit
             filter.mesh = mesh;
             MeshRenderer renderer = visual.AddComponent<MeshRenderer>();
             renderer.material = GetCrossingHighlightWorldMaterial(mode);
+            CrossingHighlightWorldVisuals.Add(visual);
+        }
+
+        private void AddAutoScanPreviewWorldVisual(PedestrianToolMode mode, List<Vector3> vertices, List<Vector2> uvs, List<int> triangles)
+        {
+            if (vertices == null || uvs == null || triangles == null || vertices.Count == 0 || uvs.Count != vertices.Count || triangles.Count == 0)
+                return;
+
+            GameObject visual = new GameObject("PCT Auto Scan Preview " + mode);
+            visual.hideFlags = HideFlags.HideAndDontSave;
+            Mesh mesh = new Mesh();
+            mesh.name = visual.name + " Mesh";
+            mesh.vertices = vertices.ToArray();
+            mesh.uv = uvs.ToArray();
+            mesh.triangles = triangles.ToArray();
+            mesh.RecalculateBounds();
+
+            MeshFilter filter = visual.AddComponent<MeshFilter>();
+            filter.mesh = mesh;
+            MeshRenderer renderer = visual.AddComponent<MeshRenderer>();
+            renderer.material = GetAutoScanPreviewWorldMaterial(mode);
             CrossingHighlightWorldVisuals.Add(visual);
         }
 
@@ -1109,6 +1234,35 @@ namespace PedestrianCrossingToolkit
             }
         }
 
+        private static Material GetAutoScanPreviewWorldMaterial(PedestrianToolMode mode)
+        {
+            switch (mode)
+            {
+                case PedestrianToolMode.MidBlockCrossing:
+                    if (_midBlockAutoScanPreviewWorldMaterial == null)
+                        _midBlockAutoScanPreviewWorldMaterial = CreateAutoScanPreviewWorldMaterial(mode);
+                    return _midBlockAutoScanPreviewWorldMaterial;
+                case PedestrianToolMode.SignalCrossing:
+                    if (_signalAutoScanPreviewWorldMaterial == null)
+                        _signalAutoScanPreviewWorldMaterial = CreateAutoScanPreviewWorldMaterial(mode);
+                    return _signalAutoScanPreviewWorldMaterial;
+                case PedestrianToolMode.SubwayLink:
+                    if (_subwayLinkAutoScanPreviewWorldMaterial == null)
+                        _subwayLinkAutoScanPreviewWorldMaterial = CreateAutoScanPreviewWorldMaterial(mode);
+                    return _subwayLinkAutoScanPreviewWorldMaterial;
+                case PedestrianToolMode.SubwayPointToPoint:
+                    if (_subwayPointAutoScanPreviewWorldMaterial == null)
+                        _subwayPointAutoScanPreviewWorldMaterial = CreateAutoScanPreviewWorldMaterial(mode);
+                    return _subwayPointAutoScanPreviewWorldMaterial;
+                case PedestrianToolMode.PedestrianBridge:
+                    if (_bridgeAutoScanPreviewWorldMaterial == null)
+                        _bridgeAutoScanPreviewWorldMaterial = CreateAutoScanPreviewWorldMaterial(mode);
+                    return _bridgeAutoScanPreviewWorldMaterial;
+                default:
+                    return GetRouteWorldMaterial();
+            }
+        }
+
         private static Material CreateCrossingHighlightWorldMaterial(PedestrianToolMode mode)
         {
             Shader shader = Shader.Find("Unlit/Transparent") ?? Shader.Find("Transparent/Diffuse") ?? Shader.Find("Diffuse");
@@ -1122,6 +1276,22 @@ namespace PedestrianCrossingToolkit
             material.SetInt("_ZWrite", 0);
             material.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
             material.renderQueue = 3000;
+            return material;
+        }
+
+        private static Material CreateAutoScanPreviewWorldMaterial(PedestrianToolMode mode)
+        {
+            Shader shader = Shader.Find("Unlit/Transparent") ?? Shader.Find("Transparent/Diffuse") ?? Shader.Find("Diffuse");
+            Material material = new Material(shader);
+            material.hideFlags = HideFlags.HideAndDontSave;
+            material.color = Color.white;
+            material.mainTexture = GetAutoScanPreviewIconTexture(mode);
+            material.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            material.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            material.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
+            material.SetInt("_ZWrite", 0);
+            material.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
+            material.renderQueue = 3120;
             return material;
         }
 
@@ -1172,38 +1342,10 @@ namespace PedestrianCrossingToolkit
             if (existing != null)
                 return existing;
 
-            Texture2D texture = new Texture2D(CrossingLocationIconTextureSize, CrossingLocationIconTextureSize, TextureFormat.ARGB32, false);
-            texture.hideFlags = HideFlags.HideAndDontSave;
-            texture.wrapMode = TextureWrapMode.Clamp;
-            texture.filterMode = FilterMode.Bilinear;
-
-            float edge = 7f;
-            float radius = 13f;
-            for (int y = 0; y < CrossingLocationIconTextureSize; y++)
-            {
-                for (int x = 0; x < CrossingLocationIconTextureSize; x++)
-                {
-                    float px = x + 0.5f;
-                    float py = y + 0.5f;
-                    Color pixel = new Color(0f, 0f, 0f, 0f);
-
-                    if (IsInsideRoundedRect(px, py, edge, edge, CrossingLocationIconTextureSize - edge, CrossingLocationIconTextureSize - edge, radius))
-                    {
-                        bool inner = IsInsideRoundedRect(px, py, edge + 4f, edge + 4f, CrossingLocationIconTextureSize - edge - 4f, CrossingLocationIconTextureSize - edge - 4f, radius - 4f);
-                        pixel = inner
-                            ? new Color(0.21f, 0.24f, 0.27f, 0.90f)
-                            : new Color(0.48f, 0.53f, 0.58f, 0.96f);
-
-                        Color iconPixel = GetCrossingLocationIconPixel(mode, px - CrossingLocationIconTextureSize * 0.5f, py - CrossingLocationIconTextureSize * 0.5f);
-                        if (iconPixel.a > 0f)
-                            pixel = AlphaOver(pixel, iconPixel);
-                    }
-
-                    texture.SetPixel(x, y, pixel);
-                }
-            }
-
-            texture.Apply(false, true);
+            Texture2D texture = CreateCrossingLocationIconTexture(
+                mode,
+                new Color(0.48f, 0.53f, 0.58f, 0.96f),
+                new Color(0.21f, 0.24f, 0.27f, 0.90f));
             switch (mode)
             {
                 case PedestrianToolMode.MidBlockCrossing:
@@ -1226,6 +1368,103 @@ namespace PedestrianCrossingToolkit
                     break;
             }
 
+            return texture;
+        }
+
+        public static Texture2D GetAutoScanPreviewIconTextureForUi(PedestrianToolMode mode)
+        {
+            return GetAutoScanPreviewIconTexture(mode);
+        }
+
+        private static Texture2D GetAutoScanPreviewIconTexture(PedestrianToolMode mode)
+        {
+            Texture2D existing;
+            switch (mode)
+            {
+                case PedestrianToolMode.MidBlockCrossing:
+                    existing = _midBlockAutoScanPreviewIconTexture;
+                    break;
+                case PedestrianToolMode.SignalCrossing:
+                    existing = _signalAutoScanPreviewIconTexture;
+                    break;
+                case PedestrianToolMode.SubwayLink:
+                    existing = _subwayLinkAutoScanPreviewIconTexture;
+                    break;
+                case PedestrianToolMode.SubwayPointToPoint:
+                    existing = _subwayPointAutoScanPreviewIconTexture;
+                    break;
+                case PedestrianToolMode.PedestrianBridge:
+                    existing = _bridgeAutoScanPreviewIconTexture;
+                    break;
+                default:
+                    existing = _midBlockAutoScanPreviewIconTexture;
+                    break;
+            }
+
+            if (existing != null)
+                return existing;
+
+            Texture2D texture = CreateCrossingLocationIconTexture(
+                mode,
+                new Color(1f, 0.82f, 0.05f, 1f),
+                new Color(0.10f, 0.12f, 0.14f, 0.92f));
+            switch (mode)
+            {
+                case PedestrianToolMode.MidBlockCrossing:
+                    _midBlockAutoScanPreviewIconTexture = texture;
+                    break;
+                case PedestrianToolMode.SignalCrossing:
+                    _signalAutoScanPreviewIconTexture = texture;
+                    break;
+                case PedestrianToolMode.SubwayLink:
+                    _subwayLinkAutoScanPreviewIconTexture = texture;
+                    break;
+                case PedestrianToolMode.SubwayPointToPoint:
+                    _subwayPointAutoScanPreviewIconTexture = texture;
+                    break;
+                case PedestrianToolMode.PedestrianBridge:
+                    _bridgeAutoScanPreviewIconTexture = texture;
+                    break;
+                default:
+                    _midBlockAutoScanPreviewIconTexture = texture;
+                    break;
+            }
+
+            return texture;
+        }
+
+        private static Texture2D CreateCrossingLocationIconTexture(PedestrianToolMode mode, Color borderColor, Color fillColor)
+        {
+            Texture2D texture = new Texture2D(CrossingLocationIconTextureSize, CrossingLocationIconTextureSize, TextureFormat.ARGB32, false);
+            texture.hideFlags = HideFlags.HideAndDontSave;
+            texture.wrapMode = TextureWrapMode.Clamp;
+            texture.filterMode = FilterMode.Bilinear;
+
+            float edge = 7f;
+            float radius = 13f;
+            for (int y = 0; y < CrossingLocationIconTextureSize; y++)
+            {
+                for (int x = 0; x < CrossingLocationIconTextureSize; x++)
+                {
+                    float px = x + 0.5f;
+                    float py = y + 0.5f;
+                    Color pixel = new Color(0f, 0f, 0f, 0f);
+
+                    if (IsInsideRoundedRect(px, py, edge, edge, CrossingLocationIconTextureSize - edge, CrossingLocationIconTextureSize - edge, radius))
+                    {
+                        bool inner = IsInsideRoundedRect(px, py, edge + 4f, edge + 4f, CrossingLocationIconTextureSize - edge - 4f, CrossingLocationIconTextureSize - edge - 4f, radius - 4f);
+                        pixel = inner ? fillColor : borderColor;
+
+                        Color iconPixel = GetCrossingLocationIconPixel(mode, px - CrossingLocationIconTextureSize * 0.5f, py - CrossingLocationIconTextureSize * 0.5f);
+                        if (iconPixel.a > 0f)
+                            pixel = AlphaOver(pixel, iconPixel);
+                    }
+
+                    texture.SetPixel(x, y, pixel);
+                }
+            }
+
+            texture.Apply(false, true);
             return texture;
         }
 

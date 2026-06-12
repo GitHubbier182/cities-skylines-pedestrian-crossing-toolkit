@@ -25,6 +25,11 @@ namespace PedestrianCrossingToolkit
         private UIButton _clearButton;
         private UIButton _validateButton;
         private UIButton _autoScanButton;
+        private UICheckBox _autoScanPreviewCheckbox;
+        private UIPanel _autoScanPreviewCheckboxRow;
+        private UIButton _rejectPreviewButton;
+        private UIButton _applyPreviewButton;
+        private UIButton _cancelPreviewButton;
         private UIButton _infoButton;
         private bool _panelDragging;
         private Vector2 _panelDragStartMouse;
@@ -57,7 +62,7 @@ namespace PedestrianCrossingToolkit
             base.Start();
 
             const float panelWidth = 520f;
-            const float panelHeight = 218f;
+            const float panelHeight = 276f;
             const float margin = 16f;
             const float contentWidth = panelWidth - (margin * 2f);
 
@@ -122,17 +127,35 @@ namespace PedestrianCrossingToolkit
 
             _statusLabel = AddLabel(this, margin, 100f, contentWidth, 42f);
 
-            _removeButton = AddButton(this, "Remove A\nCrossing", margin, 154f, 116f, 42f, (c, p) => ActivateMode(PedestrianToolMode.RemoveCrossing));
+            _autoScanPreviewCheckboxRow = AddCheckBox(
+                this,
+                "Preview Auto Scan",
+                "Review Auto Scan suggestions before applying them.",
+                PedestrianCrossingToolkitState.AutoScanPreviewConfirmEnabled,
+                value => PedestrianCrossingToolkitState.SetAutoScanPreviewConfirmEnabled(value),
+                out _autoScanPreviewCheckbox);
+            _autoScanPreviewCheckboxRow.relativePosition = new Vector3(margin, 146f);
+
+            _removeButton = AddButton(this, "Remove A\nCrossing", margin, 178f, 116f, 42f, (c, p) => ActivateMode(PedestrianToolMode.RemoveCrossing));
             _removeButton.tooltip = "Remove a crossing by clicking its location.";
 
-            _validateButton = AddButton(this, "Validate\nCrossings", 140f, 154f, 116f, 42f, OnValidateClicked);
+            _validateButton = AddButton(this, "Validate\nCrossings", 140f, 178f, 116f, 42f, OnValidateClicked);
             _validateButton.tooltip = "Run a one-time health check for placed toolkit crossings.";
 
-            _clearButton = AddButton(this, "Clear All\nCrossings", 264f, 154f, 116f, 42f, OnClearClicked);
+            _clearButton = AddButton(this, "Clear All\nCrossings", 264f, 178f, 116f, 42f, OnClearClicked);
             _clearButton.tooltip = "Remove all crossings from this city.";
 
-            _autoScanButton = AddButton(this, "Auto\nScan", 388f, 154f, 116f, 42f, OnAutoScanClicked);
+            _autoScanButton = AddButton(this, "Auto\nScan", 388f, 178f, 116f, 42f, OnAutoScanClicked);
             _autoScanButton.tooltip = "Run a one-time scan for pedestrian-caused traffic hotspots.";
+
+            _rejectPreviewButton = AddButton(this, "Reject\nProposal", margin, 226f, 116f, 34f, OnRejectPreviewClicked);
+            _rejectPreviewButton.tooltip = "Click a preview marker to reject that suggested crossing.";
+
+            _applyPreviewButton = AddButton(this, "Apply\nPreview", 140f, 226f, 116f, 34f, OnApplyPreviewClicked);
+            _applyPreviewButton.tooltip = "Create all remaining Auto Scan preview suggestions.";
+
+            _cancelPreviewButton = AddButton(this, "Cancel\nPreview", 264f, 226f, 116f, 34f, OnCancelPreviewClicked);
+            _cancelPreviewButton.tooltip = "Discard the staged Auto Scan suggestions.";
 
             Refresh();
             Hide();
@@ -155,6 +178,8 @@ namespace PedestrianCrossingToolkit
                 && PedestrianCrossingToolkitState.ActiveMode == PedestrianToolMode.None
                 && _ignoreRightClickCloseFrame != Time.frameCount)
             {
+                PedestrianCrossingToolkitState.ClearValidationProblemMarkersForToolkitClose();
+                PedestrianCrossingAutoScanInstructionsPanel.HideInstance();
                 Hide();
                 _uiPointerCaptured = false;
                 Debug.Log("[PedestrianCrossingToolkit] Toolkit closed: right-click with no active crossing tool.");
@@ -181,6 +206,7 @@ namespace PedestrianCrossingToolkit
 
         public static void DestroyInstance()
         {
+            PedestrianCrossingAutoScanInstructionsPanel.DestroyInstance();
             if (Instance == null)
                 return;
 
@@ -196,6 +222,8 @@ namespace PedestrianCrossingToolkit
             if (Instance.isVisible)
             {
                 Instance.CancelActiveTool();
+                PedestrianCrossingToolkitState.ClearValidationProblemMarkersForToolkitClose();
+                PedestrianCrossingAutoScanInstructionsPanel.HideInstance();
                 Instance.Hide();
             }
             else
@@ -208,6 +236,11 @@ namespace PedestrianCrossingToolkit
         {
             if (Instance != null)
                 Instance.Refresh();
+        }
+
+        public static void ShowAutoScanPreviewInstructionsIfNeeded()
+        {
+            PedestrianCrossingAutoScanInstructionsPanel.ShowIfNeeded();
         }
 
         public static bool IsMouseOverToolkitUi()
@@ -238,6 +271,8 @@ namespace PedestrianCrossingToolkit
                 return;
 
             Instance.CancelActiveTool();
+            PedestrianCrossingToolkitState.ClearValidationProblemMarkersForToolkitClose();
+            PedestrianCrossingAutoScanInstructionsPanel.HideInstance();
             Instance.Hide();
             _uiPointerCaptured = false;
         }
@@ -302,6 +337,13 @@ namespace PedestrianCrossingToolkit
                 return;
             }
 
+            if (PedestrianCrossingToolkitState.HasAutoScanPreviewPlan
+                && mode != PedestrianToolMode.AutoScanReject)
+            {
+                Refresh();
+                return;
+            }
+
             PedestrianCrossingToolkitState.SetActiveMode(mode);
             PedestrianCrossingInteractionTool tool = PedestrianCrossingInteractionTool.EnsureOnToolController();
             if (tool != null && ToolsModifierControl.toolController != null)
@@ -316,6 +358,8 @@ namespace PedestrianCrossingToolkit
         private void OnCloseClicked(UIComponent component, UIMouseEventParameter p)
         {
             CancelActiveTool();
+            PedestrianCrossingToolkitState.ClearValidationProblemMarkersForToolkitClose();
+            PedestrianCrossingAutoScanInstructionsPanel.HideInstance();
             Hide();
         }
 
@@ -332,6 +376,29 @@ namespace PedestrianCrossingToolkit
             CancelActiveTool();
             if (PedestrianCrossingToolkitState.BeginAutoScanObservation())
                 Debug.Log("[PedestrianCrossingToolkit] Auto scan button started observation.");
+        }
+
+        private void OnRejectPreviewClicked(UIComponent component, UIMouseEventParameter p)
+        {
+            if (!PedestrianCrossingToolkitState.HasAutoScanPreviewPlan)
+            {
+                Refresh();
+                return;
+            }
+
+            ActivateMode(PedestrianToolMode.AutoScanReject);
+        }
+
+        private void OnApplyPreviewClicked(UIComponent component, UIMouseEventParameter p)
+        {
+            CancelActiveTool();
+            PedestrianCrossingToolkitState.ApplyAutoScanPreview();
+        }
+
+        private void OnCancelPreviewClicked(UIComponent component, UIMouseEventParameter p)
+        {
+            CancelActiveTool();
+            PedestrianCrossingToolkitState.CancelAutoScanPreview();
         }
 
         private void OnValidateClicked(UIComponent component, UIMouseEventParameter p)
@@ -421,20 +488,37 @@ namespace PedestrianCrossingToolkit
             SetButtonState(_subwayPointButton, mode == PedestrianToolMode.SubwayPointToPoint);
             SetButtonState(_bridgeButton, mode == PedestrianToolMode.PedestrianBridge);
             SetButtonState(_removeButton, mode == PedestrianToolMode.RemoveCrossing);
+            SetButtonState(_rejectPreviewButton, mode == PedestrianToolMode.AutoScanReject);
 
             _statusLabel.text = GetSelectedModeStatusText(mode);
             bool hasPendingAssets = CrossingPlacementRegistry.Count > 0;
             bool scanning = PedestrianCrossingToolkitState.IsAutoScanObservationActive;
-            _midBlockButton.isEnabled = !scanning;
-            _signalButton.isEnabled = !scanning;
-            _subwayButton.isEnabled = !scanning;
-            _subwayPointButton.isEnabled = !scanning;
-            _bridgeButton.isEnabled = !scanning;
-            _removeButton.isEnabled = !scanning;
-            _validateButton.isEnabled = hasPendingAssets && !scanning;
-            _clearButton.isEnabled = hasPendingAssets && !scanning;
-            _autoScanButton.isEnabled = PedestrianCrossingToolkitState.Enabled && !scanning;
+            bool previewPending = PedestrianCrossingToolkitState.HasAutoScanPreviewPlan;
+            bool actionEnabled = !scanning && !previewPending;
+            _midBlockButton.isEnabled = actionEnabled;
+            _signalButton.isEnabled = actionEnabled;
+            _subwayButton.isEnabled = actionEnabled;
+            _subwayPointButton.isEnabled = actionEnabled;
+            _bridgeButton.isEnabled = actionEnabled;
+            _removeButton.isEnabled = actionEnabled;
+            _validateButton.isEnabled = hasPendingAssets && actionEnabled;
+            _clearButton.isEnabled = hasPendingAssets && actionEnabled;
+            _autoScanButton.isEnabled = PedestrianCrossingToolkitState.Enabled && actionEnabled;
             _autoScanButton.text = scanning ? "Scanning..." : "Auto\nScan";
+            if (_autoScanPreviewCheckbox != null)
+            {
+                _autoScanPreviewCheckbox.isEnabled = !scanning && !previewPending;
+                if (_autoScanPreviewCheckbox.isChecked != PedestrianCrossingToolkitState.AutoScanPreviewConfirmEnabled)
+                    _autoScanPreviewCheckbox.isChecked = PedestrianCrossingToolkitState.AutoScanPreviewConfirmEnabled;
+            }
+
+            bool showPreviewControls = previewPending;
+            _rejectPreviewButton.isVisible = showPreviewControls;
+            _applyPreviewButton.isVisible = showPreviewControls;
+            _cancelPreviewButton.isVisible = showPreviewControls;
+            _rejectPreviewButton.isEnabled = showPreviewControls && PedestrianCrossingToolkitState.AutoScanPreviewAcceptedCount > 0;
+            _applyPreviewButton.isEnabled = showPreviewControls && PedestrianCrossingToolkitState.AutoScanPreviewAcceptedCount > 0;
+            _cancelPreviewButton.isEnabled = showPreviewControls;
             _infoButton.isEnabled = PedestrianCrossingToolkitState.Enabled;
         }
 
@@ -452,6 +536,11 @@ namespace PedestrianCrossingToolkit
                     return "Manual Subway: pick a start entrance, then an end entrance within range.";
                 case PedestrianToolMode.PedestrianBridge:
                     return "Bridge: place a pedestrian bridge across a valid road, rail, or metro target.";
+                case PedestrianToolMode.AutoScanReject:
+                    if (!string.IsNullOrEmpty(PedestrianCrossingToolkitState.StatusMessage))
+                        return PedestrianCrossingToolkitState.StatusMessage;
+
+                    return "Reject Proposal: click a yellow Auto Scan marker to remove that suggested crossing.";
                 case PedestrianToolMode.RemoveCrossing:
                     return "Remove A Crossing: click an existing Pedestrian Crossing Toolkit crossing to remove its owned assets.";
                 default:
@@ -482,6 +571,49 @@ namespace PedestrianCrossingToolkit
             label.wordWrap = true;
             label.autoHeight = false;
             return label;
+        }
+
+        private UIPanel AddCheckBox(UIComponent parent, string text, string tooltip, bool initial, Action<bool> onChanged, out UICheckBox checkbox)
+        {
+            UIPanel row = parent.AddUIComponent<UIPanel>();
+            row.width = 260f;
+            row.height = 24f;
+            row.tooltip = tooltip;
+            RegisterInputShield(row);
+
+            checkbox = row.AddUIComponent<UICheckBox>();
+            checkbox.width = 22f;
+            checkbox.height = 22f;
+            checkbox.relativePosition = new Vector3(0f, 1f);
+            checkbox.tooltip = tooltip;
+            RegisterInputShield(checkbox);
+
+            UISprite uncheckedSprite = checkbox.AddUIComponent<UISprite>();
+            uncheckedSprite.spriteName = "check-unchecked";
+            uncheckedSprite.size = new Vector2(16f, 16f);
+            uncheckedSprite.relativePosition = new Vector3(2f, 3f);
+            RegisterInputShield(uncheckedSprite);
+
+            UISprite checkedSprite = uncheckedSprite.AddUIComponent<UISprite>();
+            checkedSprite.spriteName = "check-checked";
+            checkedSprite.size = uncheckedSprite.size;
+            checkedSprite.relativePosition = Vector3.zero;
+            checkbox.checkedBoxObject = checkedSprite;
+            checkbox.isChecked = initial;
+            RegisterInputShield(checkedSprite);
+
+            UILabel label = row.AddUIComponent<UILabel>();
+            label.text = text;
+            label.textScale = 0.66f;
+            label.width = 220f;
+            label.height = 22f;
+            label.relativePosition = new Vector3(28f, 4f);
+            label.tooltip = tooltip;
+            label.wordWrap = false;
+            RegisterInputShield(label);
+
+            checkbox.eventCheckChanged += (c, value) => onChanged(value);
+            return row;
         }
 
         private UIButton AddButton(UIComponent parent, string text, float x, float y, float buttonWidth, float buttonHeight, MouseEventHandler onClick)
@@ -590,6 +722,7 @@ namespace PedestrianCrossingToolkit
         private static bool IsMouseOverToolkitComponent()
         {
             return IsMouseOverComponent(Instance)
+                   || IsMouseOverComponent(PedestrianCrossingAutoScanInstructionsPanel.Instance)
                    || IsMouseOverComponent(PedestrianCrossingToolkitLauncherButton.Instance)
                    || IsMouseOverComponent(UnifiedTransitLauncherToolbar.Current);
         }
@@ -599,6 +732,7 @@ namespace PedestrianCrossingToolkit
             while (component != null)
             {
                 if (component == Instance
+                    || component == PedestrianCrossingAutoScanInstructionsPanel.Instance
                     || component == PedestrianCrossingToolkitLauncherButton.Instance
                     || component == UnifiedTransitLauncherToolbar.Current)
                     return true;

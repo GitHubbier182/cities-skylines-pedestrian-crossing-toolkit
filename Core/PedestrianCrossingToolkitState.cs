@@ -37,9 +37,19 @@ namespace PedestrianCrossingToolkit
         private const int ValidationAssetIdBufferSize = 4096;
         private const int ValidationProblemAssetBufferSize = 4096;
         private const int AutoScanChangedAssetBufferSize = 4096;
+        private const float AutoScanPreviewPickRadiusPixels = 44f;
         private const int ValidationMaxDetailLogs = 12;
+        private const string AutoScanPreviewInstructionsSuppressedKey = "PedestrianCrossingToolkit.AutoScanPreviewInstructionsSuppressed";
         private static CrossingAutoScanPlanner.ObservationSession _autoScanObservation;
         private static int _autoScanObservationStatusSecond = -1;
+        private static bool _autoScanPreviewConfirmEnabled;
+        private static bool _autoScanPreviewInstructionsSuppressedLoaded;
+        private static bool _autoScanPreviewInstructionsSuppressed;
+        private static CrossingAutoScanPlan _autoScanPreviewPlan = CrossingAutoScanPlan.Empty;
+        private static int _autoScanPreviewProposalCount;
+        private static int _autoScanPreviewAcceptedCount;
+        private static int _autoScanPreviewRejectedCount;
+        private static int _autoScanPreviewRevision;
         private static float _networkDependencyScanTimer;
         private static readonly CrossingPlacementAsset[] ClearPlacementAssets = new CrossingPlacementAsset[4096];
         private static readonly CrossingPlacementAsset[] NetworkDependencyAssetBuffer = new CrossingPlacementAsset[NetworkDependencyAssetBufferSize];
@@ -49,6 +59,7 @@ namespace PedestrianCrossingToolkit
         private static readonly int[] ValidationAssetIdBuffer = new int[ValidationAssetIdBufferSize];
         private static readonly int[] ValidationProblemAssetIds = new int[ValidationProblemAssetBufferSize];
         private static readonly int[] AutoScanChangedAssetIds = new int[AutoScanChangedAssetBufferSize];
+        private static readonly bool[] AutoScanPreviewAccepted = new bool[CrossingAutoScanPlanner.MaxPlannedPlacements];
         private static readonly Dictionary<int, NetworkDependencySnapshot> NetworkDependencySnapshots = new Dictionary<int, NetworkDependencySnapshot>();
         private static readonly List<int> StaleNetworkDependencySnapshotIds = new List<int>();
         private static int _validationProblemAssetCount;
@@ -59,6 +70,45 @@ namespace PedestrianCrossingToolkit
         public static bool IsAutoScanObservationActive
         {
             get { return _autoScanObservation != null; }
+        }
+
+        public static bool AutoScanPreviewConfirmEnabled
+        {
+            get { return _autoScanPreviewConfirmEnabled; }
+        }
+
+        public static bool AutoScanPreviewInstructionsSuppressed
+        {
+            get
+            {
+                EnsureAutoScanPreviewInstructionsPreferenceLoaded();
+                return _autoScanPreviewInstructionsSuppressed;
+            }
+        }
+
+        public static bool HasAutoScanPreviewPlan
+        {
+            get { return _autoScanPreviewProposalCount > 0; }
+        }
+
+        public static int AutoScanPreviewProposalCount
+        {
+            get { return _autoScanPreviewProposalCount; }
+        }
+
+        public static int AutoScanPreviewAcceptedCount
+        {
+            get { return _autoScanPreviewAcceptedCount; }
+        }
+
+        public static int AutoScanPreviewRejectedCount
+        {
+            get { return _autoScanPreviewRejectedCount; }
+        }
+
+        public static int AutoScanPreviewRevision
+        {
+            get { return _autoScanPreviewRevision; }
         }
 
         public static bool HasValidationProblemAssets
@@ -85,6 +135,158 @@ namespace PedestrianCrossingToolkit
             }
 
             return copied;
+        }
+
+        public static void SetAutoScanPreviewConfirmEnabled(bool enabled)
+        {
+            _autoScanPreviewConfirmEnabled = enabled;
+            if (!enabled && HasAutoScanPreviewPlan)
+                ClearAutoScanPreviewPlan(false);
+        }
+
+        public static void SetAutoScanPreviewInstructionsSuppressed(bool suppressed)
+        {
+            EnsureAutoScanPreviewInstructionsPreferenceLoaded();
+            _autoScanPreviewInstructionsSuppressed = suppressed;
+            PlayerPrefs.SetInt(AutoScanPreviewInstructionsSuppressedKey, suppressed ? 1 : 0);
+            PlayerPrefs.Save();
+        }
+
+        public static int CopyAutoScanPreviewPlacementsTo(CrossingPlacementRecord[] placements, int[] proposalIndices)
+        {
+            if (placements == null)
+                return 0;
+
+            int copied = 0;
+            int max = Mathf.Min(_autoScanPreviewProposalCount, _autoScanPreviewPlan.PlacementCount);
+            for (int i = 0; i < max && copied < placements.Length; i++)
+            {
+                if (!AutoScanPreviewAccepted[i])
+                    continue;
+
+                CrossingPlacementRecord placement = _autoScanPreviewPlan.Placements[i];
+                if (!placement.IsValid)
+                    continue;
+
+                placements[copied] = placement;
+                if (proposalIndices != null && copied < proposalIndices.Length)
+                    proposalIndices[copied] = i;
+                copied++;
+            }
+
+            return copied;
+        }
+
+        public static bool TryGetAutoScanPreviewProposalNearScreen(Camera camera, Vector2 screenPosition, out int proposalIndex, out CrossingPlacementRecord placement, out CrossingPlacementPlan plan)
+        {
+            proposalIndex = -1;
+            placement = CrossingPlacementRecord.None;
+            plan = CrossingPlacementPlan.Invalid;
+            if (camera == null || !HasAutoScanPreviewPlan)
+                return false;
+
+            float bestDistanceSqr = AutoScanPreviewPickRadiusPixels * AutoScanPreviewPickRadiusPixels;
+            int max = Mathf.Min(_autoScanPreviewProposalCount, _autoScanPreviewPlan.PlacementCount);
+            for (int i = 0; i < max; i++)
+            {
+                if (!AutoScanPreviewAccepted[i])
+                    continue;
+
+                CrossingPlacementRecord candidate = _autoScanPreviewPlan.Placements[i];
+                if (!candidate.IsValid)
+                    continue;
+
+                CrossingPlacementPlan candidatePlan = CrossingPlacementPlanner.Build(candidate);
+                if (!candidatePlan.IsValid)
+                    continue;
+
+                Vector3 screen = camera.WorldToScreenPoint(candidatePlan.Center);
+                if (screen.z <= 0f)
+                    continue;
+
+                float dx = screen.x - screenPosition.x;
+                float dy = screen.y - screenPosition.y;
+                float distanceSqr = dx * dx + dy * dy;
+                if (distanceSqr >= bestDistanceSqr)
+                    continue;
+
+                bestDistanceSqr = distanceSqr;
+                proposalIndex = i;
+                placement = candidate;
+                plan = candidatePlan;
+            }
+
+            return proposalIndex >= 0;
+        }
+
+        public static bool RejectAutoScanPreviewProposal(int proposalIndex)
+        {
+            if (proposalIndex < 0
+                || proposalIndex >= _autoScanPreviewProposalCount
+                || proposalIndex >= AutoScanPreviewAccepted.Length
+                || !AutoScanPreviewAccepted[proposalIndex])
+            {
+                StatusMessage = "Click a yellow Auto Scan preview marker to reject it.";
+                PedestrianCrossingToolkitPanel.RefreshInstance();
+                return false;
+            }
+
+            AutoScanPreviewAccepted[proposalIndex] = false;
+            _autoScanPreviewAcceptedCount = Mathf.Max(0, _autoScanPreviewAcceptedCount - 1);
+            _autoScanPreviewRejectedCount++;
+            _autoScanPreviewRevision++;
+            CrossingPlacementRecord placement = _autoScanPreviewPlan.Placements[proposalIndex];
+            StatusMessage = "Rejected Auto Scan " + GetModeLabel(placement.Mode) + ". "
+                            + _autoScanPreviewAcceptedCount
+                            + " proposal"
+                            + (_autoScanPreviewAcceptedCount == 1 ? string.Empty : "s")
+                            + " remain.";
+            PedestrianCrossingToolkitPanel.RefreshInstance();
+            Debug.Log("[PedestrianCrossingToolkit] Auto scan preview proposal rejected: index="
+                      + proposalIndex
+                      + " mode="
+                      + placement.Mode
+                      + " segment="
+                      + placement.SegmentId
+                      + " acceptedRemaining="
+                      + _autoScanPreviewAcceptedCount
+                      + " rejected="
+                      + _autoScanPreviewRejectedCount);
+            return true;
+        }
+
+        public static CrossingAutoScanSummary ApplyAutoScanPreview()
+        {
+            if (!HasAutoScanPreviewPlan)
+            {
+                StatusMessage = "No Auto Scan preview is waiting to apply.";
+                PedestrianCrossingToolkitPanel.RefreshInstance();
+                return CrossingAutoScanSummary.Empty;
+            }
+
+            CrossingAutoScanPlan plan = BuildAcceptedAutoScanPreviewPlan();
+            if (!plan.HasWork)
+            {
+                StatusMessage = "All Auto Scan proposals were rejected. Cancel preview or run Auto Scan again.";
+                PedestrianCrossingToolkitPanel.RefreshInstance();
+                return CrossingAutoScanSummary.Empty;
+            }
+
+            ClearAutoScanPreviewPlan(false);
+            return ApplyAutoScanPlan(plan, "auto-scan-preview");
+        }
+
+        public static void CancelAutoScanPreview()
+        {
+            if (!HasAutoScanPreviewPlan)
+                return;
+
+            int rejected = _autoScanPreviewRejectedCount;
+            ClearAutoScanPreviewPlan(false);
+            StatusMessage = rejected > 0
+                ? "Auto Scan preview cancelled after rejecting " + rejected + " proposal" + (rejected == 1 ? string.Empty : "s") + "."
+                : "Auto Scan preview cancelled.";
+            PedestrianCrossingToolkitPanel.RefreshInstance();
         }
 
         private struct SegmentDependencySignature
@@ -218,6 +420,8 @@ namespace PedestrianCrossingToolkit
                 ? "No pedestrian crossing tool selected."
                 : mode == PedestrianToolMode.RemoveCrossing
                     ? "Remove mode selected. Hover an existing crossing and click to remove it."
+                    : mode == PedestrianToolMode.AutoScanReject
+                        ? "Reject Proposal selected. Click a yellow Auto Scan preview marker to reject it."
                     : mode == PedestrianToolMode.SubwayPointToPoint
                         ? "Selected point-to-point subway. Click a road-side start entrance, then a road-side end entrance within 50f."
                         : mode == PedestrianToolMode.SubwayLink
@@ -591,6 +795,13 @@ namespace PedestrianCrossingToolkit
 
         public static bool BeginAutoScanObservation()
         {
+            if (HasAutoScanPreviewPlan)
+            {
+                StatusMessage = "Apply or cancel the current Auto Scan preview before starting another scan.";
+                PedestrianCrossingToolkitPanel.RefreshInstance();
+                return false;
+            }
+
             if (_autoScanObservation != null)
             {
                 StatusMessage = _autoScanObservation.ToStatusString();
@@ -660,7 +871,7 @@ namespace PedestrianCrossingToolkit
             _hasLastValidationSummary = true;
             StatusMessage = summary.ToStatusString();
             if (summary.HasIssues && HasValidationProblemAssets)
-                StatusMessage += " Red X markers show where to fix. Remove/rebuild the marked crossings, then run Validate Crossings again.";
+                StatusMessage += " Red X markers stay until the Toolkit is closed, so you can fix multiple marked crossings from one scan. Run Validate Crossings again when finished.";
             else if (summary.HasIssues)
                 StatusMessage += " Remove/rebuild affected crossings, then run Validate Crossings again.";
 
@@ -706,10 +917,10 @@ namespace PedestrianCrossingToolkit
 
             StringBuilder builder = new StringBuilder();
             builder.AppendLine("Pedestrian Crossing Toolkit user info");
-            builder.AppendLine("Version: 1.0.4");
+            builder.AppendLine("Version: 1.1.0");
             builder.AppendLine("Enabled: " + FormatBool(Enabled));
             builder.AppendLine("Active mode: " + ActiveMode);
-            builder.AppendLine("Auto Scan: " + (_autoScanObservation == null ? "idle" : _autoScanObservation.ToStatusString()));
+            builder.AppendLine("Auto Scan: " + FormatAutoScanForUserInfo());
             builder.AppendLine("Crossings: total=" + CrossingPlacementRegistry.Count
                                + " standard=" + standard
                                + " signal=" + signal
@@ -931,6 +1142,12 @@ namespace PedestrianCrossingToolkit
 
             _validationProblemAssetCount = 0;
             _validationProblemRevision++;
+        }
+
+        public static void ClearValidationProblemMarkersForToolkitClose()
+        {
+            ClearValidationProblemAssets();
+            ClearAutoScanPreviewPlan(false);
         }
 
         private static void AddValidationProblemAsset(int assetId)
@@ -1252,7 +1469,6 @@ namespace PedestrianCrossingToolkit
             if (removed == 0)
                 return;
 
-            ClearValidationProblemAssets();
             CrossingApplicationEngine.Refresh(reason);
             SyncPathExecutionBoundary(reason);
             if (gradeSeparatedRemoved)
@@ -1418,6 +1634,156 @@ namespace PedestrianCrossingToolkit
         private static CrossingAutoScanSummary RunAutoScan(CrossingAutoScanPlanner.ObservationSession observation)
         {
             CrossingAutoScanPlan autoPlan = CrossingAutoScanPlanner.Build(observation);
+            if (_autoScanPreviewConfirmEnabled && autoPlan.HasWork)
+            {
+                StageAutoScanPreviewPlan(autoPlan);
+                Debug.Log("[PedestrianCrossingToolkit] Auto scan staged for preview: " + autoPlan.Summary.ToLogString());
+                return autoPlan.Summary;
+            }
+
+            return ApplyAutoScanPlan(autoPlan, "auto-scan");
+        }
+
+        private static void StageAutoScanPreviewPlan(CrossingAutoScanPlan plan)
+        {
+            ClearAutoScanPreviewPlan(false);
+            _autoScanPreviewPlan = plan;
+            _autoScanPreviewProposalCount = Mathf.Min(plan.PlacementCount, AutoScanPreviewAccepted.Length);
+            _autoScanPreviewAcceptedCount = _autoScanPreviewProposalCount;
+            _autoScanPreviewRejectedCount = 0;
+            for (int i = 0; i < _autoScanPreviewProposalCount; i++)
+                AutoScanPreviewAccepted[i] = true;
+
+            LastPreview = CrossingPlacementRecord.None;
+            LastPlacement = CrossingPlacementRecord.None;
+            LastPlacementPlan = CrossingPlacementPlan.Invalid;
+            LastAsset = CrossingPlacementAsset.None;
+            if (ActiveMode == PedestrianToolMode.AutoScanReject)
+                SetActiveMode(PedestrianToolMode.None);
+
+            _autoScanPreviewRevision++;
+            StatusMessage = "Auto Scan preview staged "
+                            + _autoScanPreviewAcceptedCount
+                            + " proposal"
+                            + (_autoScanPreviewAcceptedCount == 1 ? string.Empty : "s")
+                            + ". Yellow markers show suggestions; reject unwanted proposals, then apply the rest.";
+            PedestrianCrossingToolkitPanel.RefreshInstance();
+            PedestrianCrossingToolkitPanel.ShowAutoScanPreviewInstructionsIfNeeded();
+        }
+
+        private static void ClearAutoScanPreviewPlan(bool refreshPanel)
+        {
+            bool hadPreview = HasAutoScanPreviewPlan;
+            int max = Mathf.Min(_autoScanPreviewProposalCount, AutoScanPreviewAccepted.Length);
+            for (int i = 0; i < max; i++)
+                AutoScanPreviewAccepted[i] = false;
+
+            _autoScanPreviewPlan = CrossingAutoScanPlan.Empty;
+            _autoScanPreviewProposalCount = 0;
+            _autoScanPreviewAcceptedCount = 0;
+            _autoScanPreviewRejectedCount = 0;
+            if (ActiveMode == PedestrianToolMode.AutoScanReject)
+                SetActiveMode(PedestrianToolMode.None);
+
+            if (hadPreview)
+                _autoScanPreviewRevision++;
+
+            if (refreshPanel)
+                PedestrianCrossingToolkitPanel.RefreshInstance();
+        }
+
+        private static CrossingAutoScanPlan BuildAcceptedAutoScanPreviewPlan()
+        {
+            CrossingPlacementRecord[] placements = new CrossingPlacementRecord[CrossingAutoScanPlanner.MaxPlannedPlacements];
+            int[] removalAssetIds = new int[CrossingAutoScanPlanner.MaxPlannedPlacements];
+            int[] placementRemovalAssetIds = new int[CrossingAutoScanPlanner.MaxPlannedPlacements];
+            int placementCount = 0;
+            int removalCount = 0;
+            int gradeSeparated = 0;
+            int signal = 0;
+            int surface = 0;
+
+            int max = Mathf.Min(_autoScanPreviewProposalCount, _autoScanPreviewPlan.PlacementCount);
+            for (int i = 0; i < max && placementCount < placements.Length; i++)
+            {
+                if (!AutoScanPreviewAccepted[i])
+                    continue;
+
+                CrossingPlacementRecord placement = _autoScanPreviewPlan.Placements[i];
+                if (!placement.IsValid)
+                    continue;
+
+                placements[placementCount] = placement;
+                int removalId = GetAutoScanPreviewPlacementRemovalAssetId(i);
+                if (AddAutoScanPreviewRemoval(removalAssetIds, ref removalCount, removalId))
+                    placementRemovalAssetIds[placementCount] = removalId;
+
+                switch (placement.Mode)
+                {
+                    case PedestrianToolMode.SignalCrossing:
+                        signal++;
+                        break;
+                    case PedestrianToolMode.MidBlockCrossing:
+                        surface++;
+                        break;
+                    case PedestrianToolMode.SubwayLink:
+                    case PedestrianToolMode.PedestrianBridge:
+                        gradeSeparated++;
+                        break;
+                }
+
+                placementCount++;
+            }
+
+            CrossingAutoScanSummary source = _autoScanPreviewPlan.Summary;
+            CrossingAutoScanSummary summary = new CrossingAutoScanSummary(
+                source.ScannedNodes,
+                source.ScannedExistingCrossings,
+                source.ScannedLongRoadSegments,
+                source.Hotspots,
+                placementCount,
+                removalCount,
+                gradeSeparated,
+                signal,
+                surface,
+                source.SkippedExisting,
+                source.Rejected,
+                source.Capped,
+                source.FirstRejection);
+
+            return new CrossingAutoScanPlan(placements, placementCount, removalAssetIds, removalCount, placementRemovalAssetIds, summary);
+        }
+
+        private static int GetAutoScanPreviewPlacementRemovalAssetId(int proposalIndex)
+        {
+            if (proposalIndex < 0
+                || _autoScanPreviewPlan.PlacementRemovalAssetIds == null
+                || proposalIndex >= _autoScanPreviewPlan.PlacementRemovalAssetIds.Length)
+            {
+                return 0;
+            }
+
+            return _autoScanPreviewPlan.PlacementRemovalAssetIds[proposalIndex];
+        }
+
+        private static bool AddAutoScanPreviewRemoval(int[] removalAssetIds, ref int removalCount, int assetId)
+        {
+            if (assetId == 0 || removalAssetIds == null || removalCount >= removalAssetIds.Length)
+                return false;
+
+            for (int i = 0; i < removalCount; i++)
+            {
+                if (removalAssetIds[i] == assetId)
+                    return false;
+            }
+
+            removalAssetIds[removalCount++] = assetId;
+            return true;
+        }
+
+        private static CrossingAutoScanSummary ApplyAutoScanPlan(CrossingAutoScanPlan autoPlan, string reason)
+        {
+            reason = string.IsNullOrEmpty(reason) ? "auto-scan" : reason;
             if (!autoPlan.HasWork)
             {
                 LastPlacement = CrossingPlacementRecord.None;
@@ -1429,7 +1795,7 @@ namespace PedestrianCrossingToolkit
                 return autoPlan.Summary;
             }
 
-            CrossingApplicationEngine.RevertAppliedOperations("auto-scan-change");
+            CrossingApplicationEngine.RevertAppliedOperations(reason + "-change");
             int removed = 0;
             int added = 0;
             int skipped = 0;
@@ -1447,7 +1813,7 @@ namespace PedestrianCrossingToolkit
                 if (CrossingPlacementRegistry.RemoveById(autoPlan.RemovalAssetIds[i], out removedAsset))
                 {
                     NetworkDependencySnapshots.Remove(removedAsset.Id);
-                    CleanupRemovedAssetForIncrementalSync(removedAsset, "auto-scan-remove");
+                    CleanupRemovedAssetForIncrementalSync(removedAsset, reason + "-remove");
                     removed++;
                 }
                 else
@@ -1485,7 +1851,7 @@ namespace PedestrianCrossingToolkit
                 RememberNetworkDependencySnapshot(asset, replaced);
                 didReplaceAny |= didReplace;
                 if (didReplace)
-                    CleanupRemovedAssetForIncrementalSync(replaced, "auto-scan-replace");
+                    CleanupRemovedAssetForIncrementalSync(replaced, reason + "-replace");
                 added++;
                 changedAssetId = added == 1 ? asset.Id : 0;
                 AddChangedAssetId(AutoScanChangedAssetIds, asset.Id, ref changedAssetCount, ref changedAssetOverflow);
@@ -1546,11 +1912,11 @@ namespace PedestrianCrossingToolkit
                                  + added
                                  + " removed="
                                  + removed);
-                SyncBuiltStructures("auto-scan", true, changedAssetId);
+                SyncBuiltStructures(reason, true, changedAssetId);
             }
             else
             {
-                SyncBuiltStructuresForChangedAssets("auto-scan", AutoScanChangedAssetIds, changedAssetCount);
+                SyncBuiltStructuresForChangedAssets(reason, AutoScanChangedAssetIds, changedAssetCount);
             }
 
             PedestrianCrossingToolkitPanel.RefreshInstance();
@@ -1613,6 +1979,7 @@ namespace PedestrianCrossingToolkit
 
         public static void ClearPlacements()
         {
+            ClearAutoScanPreviewPlan(false);
             ClearDeferredNetworkDependencyCleanup();
             CrossingApplicationEngine.RevertAppliedOperations("clear-change");
             int removed = CrossingPlacementRegistry.Count;
@@ -1669,6 +2036,7 @@ namespace PedestrianCrossingToolkit
             ClearDeferredNetworkDependencyCleanup();
             _autoScanObservation = null;
             _autoScanObservationStatusSecond = -1;
+            ClearAutoScanPreviewPlan(false);
             _networkDependencyScanTimer = 0f;
             NetworkDependencySnapshots.Clear();
             StaleNetworkDependencySnapshotIds.Clear();
@@ -1713,6 +2081,7 @@ namespace PedestrianCrossingToolkit
             ClearDeferredNetworkDependencyCleanup();
             _autoScanObservation = null;
             _autoScanObservationStatusSecond = -1;
+            ClearAutoScanPreviewPlan(false);
             _networkDependencyScanTimer = 0f;
             NetworkDependencySnapshots.Clear();
             StaleNetworkDependencySnapshotIds.Clear();
@@ -1820,7 +2189,6 @@ namespace PedestrianCrossingToolkit
         private static void SyncBuiltStructuresForChangedAssets(string reason, int[] changedAssetIds, int changedAssetCount)
         {
             float startedAt = Time.realtimeSinceStartup;
-            ClearValidationProblemAssets();
             CrossingApplicationEngine.Refresh(reason);
             SyncPathExecutionBoundary(reason);
             try
@@ -1887,7 +2255,6 @@ namespace PedestrianCrossingToolkit
         private static void SyncBuiltStructures(string reason, bool rebuildExisting, int changedAssetId)
         {
             float startedAt = Time.realtimeSinceStartup;
-            ClearValidationProblemAssets();
             int pruned = CrossingPlacementRegistry.PruneDuplicateAssets();
             CrossingApplicationEngine.Refresh(reason);
             SyncPathExecutionBoundary(reason);
@@ -1942,6 +2309,8 @@ namespace PedestrianCrossingToolkit
                     return "point-to-point subway";
                 case PedestrianToolMode.PedestrianBridge:
                     return "pedestrian bridge";
+                case PedestrianToolMode.AutoScanReject:
+                    return "Auto Scan proposal";
                 case PedestrianToolMode.RemoveCrossing:
                     return "remove crossing";
                 default:
@@ -1990,6 +2359,37 @@ namespace PedestrianCrossingToolkit
             return _lastValidationSummary.HasIssues
                 ? "actionableIssues=" + _lastValidationSummary.IssueCount + " " + _lastValidationSummary.ToShortIssueStringForUserInfo()
                 : "noPlayerActionNeeded diagnosticNotes=" + _lastValidationSummary.DiagnosticNoteCount;
+        }
+
+        private static string FormatAutoScanForUserInfo()
+        {
+            if (_autoScanObservation != null)
+                return _autoScanObservation.ToStatusString();
+
+            if (HasAutoScanPreviewPlan)
+            {
+                return "preview pending accepted="
+                       + _autoScanPreviewAcceptedCount
+                       + " rejected="
+                       + _autoScanPreviewRejectedCount
+                       + " total="
+                       + _autoScanPreviewProposalCount
+                       + " instructionsSuppressed="
+                       + FormatBool(AutoScanPreviewInstructionsSuppressed);
+            }
+
+            return (_autoScanPreviewConfirmEnabled ? "idle previewConfirm=on" : "idle")
+                   + " instructionsSuppressed="
+                   + FormatBool(AutoScanPreviewInstructionsSuppressed);
+        }
+
+        private static void EnsureAutoScanPreviewInstructionsPreferenceLoaded()
+        {
+            if (_autoScanPreviewInstructionsSuppressedLoaded)
+                return;
+
+            _autoScanPreviewInstructionsSuppressed = PlayerPrefs.GetInt(AutoScanPreviewInstructionsSuppressedKey, 0) != 0;
+            _autoScanPreviewInstructionsSuppressedLoaded = true;
         }
 
         private static string FormatPrefabName(NetInfo info)

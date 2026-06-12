@@ -55,11 +55,14 @@ namespace PedestrianCrossingToolkit
         private CrossingPlacementAsset _previewTouchedAsset = CrossingPlacementAsset.None;
         private CrossingPlacementAsset _hoverSignalAsset = CrossingPlacementAsset.None;
         private CrossingPlacementAsset _hoverCrossingInfoAsset = CrossingPlacementAsset.None;
+        private CrossingPlacementRecord _hoverAutoScanPreviewPlacement = CrossingPlacementRecord.None;
+        private CrossingPlacementPlan _hoverAutoScanPreviewPlan = CrossingPlacementPlan.Invalid;
         private CrossingPathBuilder.SignalControllerDebugSnapshot _hoverSignalStatus;
         private Vector3 _hoverSignalStatusWorldPosition = Vector3.zero;
         private bool _previewTouchesExisting;
         private bool _hasHoverSignalStatus;
         private bool _hasHoverCrossingInfo;
+        private int _hoverAutoScanPreviewProposalIndex = -1;
         private Color _previewHoverColor;
         private float _placementBlockUntil;
         private string _placementBlockMessage = string.Empty;
@@ -179,6 +182,9 @@ namespace PedestrianCrossingToolkit
                 _hoverSignalAsset = CrossingPlacementAsset.None;
                 _hasHoverCrossingInfo = false;
                 _hoverCrossingInfoAsset = CrossingPlacementAsset.None;
+                _hoverAutoScanPreviewProposalIndex = -1;
+                _hoverAutoScanPreviewPlacement = CrossingPlacementRecord.None;
+                _hoverAutoScanPreviewPlan = CrossingPlacementPlan.Invalid;
                 ShowToolInfo(false, null, Vector3.zero);
                 return;
             }
@@ -190,6 +196,9 @@ namespace PedestrianCrossingToolkit
                 _hoverSignalAsset = CrossingPlacementAsset.None;
                 _hasHoverCrossingInfo = false;
                 _hoverCrossingInfoAsset = CrossingPlacementAsset.None;
+                _hoverAutoScanPreviewProposalIndex = -1;
+                _hoverAutoScanPreviewPlacement = CrossingPlacementRecord.None;
+                _hoverAutoScanPreviewPlan = CrossingPlacementPlan.Invalid;
                 ClearSignalGuideWorldVisual();
                 ShowToolInfo(false, null, Vector3.zero);
 
@@ -209,6 +218,9 @@ namespace PedestrianCrossingToolkit
                 _hoverSignalAsset = CrossingPlacementAsset.None;
                 _hasHoverCrossingInfo = false;
                 _hoverCrossingInfoAsset = CrossingPlacementAsset.None;
+                _hoverAutoScanPreviewProposalIndex = -1;
+                _hoverAutoScanPreviewPlacement = CrossingPlacementRecord.None;
+                _hoverAutoScanPreviewPlan = CrossingPlacementPlan.Invalid;
                 ClearSignalGuideWorldVisual();
                 ShowToolInfo(false, null, Vector3.zero);
 
@@ -216,6 +228,34 @@ namespace PedestrianCrossingToolkit
             }
 
             PedestrianToolMode activeMode = PedestrianCrossingToolkitState.ActiveMode;
+            if (activeMode == PedestrianToolMode.AutoScanReject)
+            {
+                UpdateAutoScanRejectHover();
+                if (Input.GetMouseButtonDown(0))
+                {
+                    if (_hoverAutoScanPreviewProposalIndex >= 0)
+                    {
+                        PedestrianCrossingToolkitState.RejectAutoScanPreviewProposal(_hoverAutoScanPreviewProposalIndex);
+                        ClearPlacementBlockFeedback();
+                    }
+                    else
+                    {
+                        PedestrianCrossingToolkitState.RejectAutoScanPreviewProposal(-1);
+                    }
+                }
+
+                if (Input.GetMouseButtonDown(1) || Input.GetKeyDown(KeyCode.Escape))
+                {
+                    if (Input.GetMouseButtonDown(1))
+                        PedestrianCrossingToolkitPanel.NotifyToolClearedByRightClick();
+
+                    PedestrianCrossingToolkitState.SetActiveMode(PedestrianToolMode.None);
+                    ToolsModifierControl.SetTool<DefaultTool>();
+                }
+
+                return;
+            }
+
             UpdateSignalGuideJoinCache(activeMode);
             ClearSignalGuideWorldVisual();
             UpdateExclusionZoneCache(activeMode);
@@ -296,6 +336,12 @@ namespace PedestrianCrossingToolkit
                 return;
             }
 
+            if (PedestrianCrossingToolkitState.ActiveMode == PedestrianToolMode.AutoScanReject)
+            {
+                GUI.color = oldColor;
+                return;
+            }
+
             DrawSignalPlacementGuide(camera);
             DrawPlacementExclusionZones(camera);
             DrawHoverSignalStatus();
@@ -343,6 +389,9 @@ namespace PedestrianCrossingToolkit
             _previewTouchedAsset = CrossingPlacementAsset.None;
             _hoverCrossingInfoAsset = CrossingPlacementAsset.None;
             _previewTouchesExisting = false;
+            _hoverAutoScanPreviewProposalIndex = -1;
+            _hoverAutoScanPreviewPlacement = CrossingPlacementRecord.None;
+            _hoverAutoScanPreviewPlan = CrossingPlacementPlan.Invalid;
             ClearSignalGuideJoinCache();
             ClearSignalGuideWorldVisual();
             ClearExclusionZoneCache();
@@ -390,6 +439,39 @@ namespace PedestrianCrossingToolkit
 
             string text = GetToolInfoText(preview);
             Vector3 anchor = IsHoldingPlacementBlockFeedback() ? _placementBlockPosition : preview.WorldPosition;
+            Vector3 toolInfoWorld = GetToolInfoPosition(camera, anchor, text);
+            StoreToolInfoScreenRect(camera, toolInfoWorld, text);
+            ShowToolInfo(true, text, toolInfoWorld);
+        }
+
+        private void UpdateAutoScanRejectHover()
+        {
+            Camera camera = Camera.main;
+            _hoverAutoScanPreviewProposalIndex = -1;
+            _hoverAutoScanPreviewPlacement = CrossingPlacementRecord.None;
+            _hoverAutoScanPreviewPlan = CrossingPlacementPlan.Invalid;
+            _hasToolInfoScreenRect = false;
+
+            if (camera == null || !PedestrianCrossingToolkitState.HasAutoScanPreviewPlan)
+            {
+                ShowToolInfo(false, null, Vector3.zero);
+                return;
+            }
+
+            int proposalIndex;
+            CrossingPlacementRecord placement;
+            CrossingPlacementPlan plan;
+            if (!PedestrianCrossingToolkitState.TryGetAutoScanPreviewProposalNearScreen(camera, Input.mousePosition, out proposalIndex, out placement, out plan))
+            {
+                ShowToolInfo(false, null, Vector3.zero);
+                return;
+            }
+
+            _hoverAutoScanPreviewProposalIndex = proposalIndex;
+            _hoverAutoScanPreviewPlacement = placement;
+            _hoverAutoScanPreviewPlan = plan;
+            string text = "Click to reject this Auto Scan " + PedestrianCrossingToolkitState.GetModeLabel(placement.Mode) + ".";
+            Vector3 anchor = plan.Center + Vector3.up * 12f;
             Vector3 toolInfoWorld = GetToolInfoPosition(camera, anchor, text);
             StoreToolInfoScreenRect(camera, toolInfoWorld, text);
             ShowToolInfo(true, text, toolInfoWorld);

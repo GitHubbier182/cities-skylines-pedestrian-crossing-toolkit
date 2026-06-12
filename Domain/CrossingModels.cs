@@ -10,6 +10,7 @@ namespace PedestrianCrossingToolkit
         SubwayLink,
         SubwayPointToPoint,
         PedestrianBridge,
+        AutoScanReject,
         RemoveCrossing
     }
 

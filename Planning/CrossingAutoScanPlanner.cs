@@ -92,20 +92,27 @@ namespace PedestrianCrossingToolkit
 
     public struct CrossingAutoScanPlan
     {
-        public static readonly CrossingAutoScanPlan Empty = new CrossingAutoScanPlan(new CrossingPlacementRecord[0], 0, new int[0], 0, CrossingAutoScanSummary.Empty);
+        public static readonly CrossingAutoScanPlan Empty = new CrossingAutoScanPlan(new CrossingPlacementRecord[0], 0, new int[0], 0, new int[0], CrossingAutoScanSummary.Empty);
 
         public readonly CrossingPlacementRecord[] Placements;
         public readonly int PlacementCount;
         public readonly int[] RemovalAssetIds;
         public readonly int RemovalCount;
+        public readonly int[] PlacementRemovalAssetIds;
         public readonly CrossingAutoScanSummary Summary;
 
         public CrossingAutoScanPlan(CrossingPlacementRecord[] placements, int placementCount, int[] removalAssetIds, int removalCount, CrossingAutoScanSummary summary)
+            : this(placements, placementCount, removalAssetIds, removalCount, null, summary)
+        {
+        }
+
+        public CrossingAutoScanPlan(CrossingPlacementRecord[] placements, int placementCount, int[] removalAssetIds, int removalCount, int[] placementRemovalAssetIds, CrossingAutoScanSummary summary)
         {
             Placements = placements ?? new CrossingPlacementRecord[0];
             PlacementCount = Mathf.Clamp(placementCount, 0, Placements.Length);
             RemovalAssetIds = removalAssetIds ?? new int[0];
             RemovalCount = Mathf.Clamp(removalCount, 0, RemovalAssetIds.Length);
+            PlacementRemovalAssetIds = placementRemovalAssetIds ?? new int[0];
             Summary = summary;
         }
 
@@ -123,6 +130,7 @@ namespace PedestrianCrossingToolkit
         private const int MaxObservationCandidates = 1024;
         private const int GridTraversalLimit = 65536;
         private const int NetNodeSegmentSlotCount = 8;
+        private const int ContinuousRoadTraversalLimit = 128;
         private const float ObservationSampleIntervalSeconds = 1f;
 
         private const float HotspotPedestrianRadius = 18f;
@@ -424,16 +432,10 @@ namespace PedestrianCrossingToolkit
                     accumulator.Hotspots++;
                     CrossingPlacementRecord placement;
                     CrossingPlacementPlan plan;
-                    if (TryCreateRoadPlacement(PedestrianToolMode.SubwayLink, candidate.SegmentId, candidate.CrossingPoint.WorldPosition, out placement, out plan)
-                        || TryCreateRoadPlacement(PedestrianToolMode.PedestrianBridge, candidate.SegmentId, candidate.CrossingPoint.WorldPosition, out placement, out plan))
-                    {
-                        if (accumulator.TryAddPlacement(placement, plan))
-                            AddLongSegmentCompensationCrossings(netManager, candidate.NodeId, accumulator);
-                    }
+                    if (TryCreateGradeSeparatedJunctionPlacement(candidate.NodeId, candidate.SegmentId, candidate.CrossingPoint.WorldPosition, accumulator, out placement, out plan))
+                        accumulator.TryAddPlacement(placement, plan);
                     else
-                    {
                         accumulator.Reject("no legal subway or bridge placement found at observed impacted junction");
-                    }
                 }
             }
 
@@ -541,6 +543,7 @@ namespace PedestrianCrossingToolkit
         {
             public readonly CrossingPlacementRecord[] Placements = new CrossingPlacementRecord[MaxPlannedPlacements];
             public readonly int[] RemovalAssetIds = new int[MaxPlannedRemovals];
+            public readonly int[] PlacementRemovalAssetIds = new int[MaxPlannedPlacements];
             public int PlacementCount;
             public int RemovalCount;
             public int ScannedNodes;
@@ -572,7 +575,7 @@ namespace PedestrianCrossingToolkit
                     Capped,
                     FirstRejection);
 
-                return new CrossingAutoScanPlan(Placements, PlacementCount, RemovalAssetIds, RemovalCount, summary);
+                return new CrossingAutoScanPlan(Placements, PlacementCount, RemovalAssetIds, RemovalCount, PlacementRemovalAssetIds, summary);
             }
 
             public bool HasPlacementCapacity()
@@ -589,7 +592,14 @@ namespace PedestrianCrossingToolkit
                 }
 
                 if (IsGradeSeparatedMode(placement.Mode)
-                    && IsAutoGradeSeparatedTargetCovered(placement, plan, Placements, PlacementCount))
+                    && IsAutoGradeSeparatedThroatCovered(placement, plan, Placements, PlacementCount))
+                {
+                    SkippedExisting++;
+                    return false;
+                }
+
+                if (placement.Mode == PedestrianToolMode.MidBlockCrossing
+                    && IsContinuousRoadCrossingCovered(placement.SegmentId, Placements, PlacementCount))
                 {
                     SkippedExisting++;
                     return false;
@@ -637,6 +647,8 @@ namespace PedestrianCrossingToolkit
                 }
 
                 RemovalAssetIds[RemovalCount++] = assetId;
+                if (PlacementCount > 0 && PlacementCount - 1 < PlacementRemovalAssetIds.Length)
+                    PlacementRemovalAssetIds[PlacementCount - 1] = assetId;
                 return true;
             }
 
@@ -671,7 +683,7 @@ namespace PedestrianCrossingToolkit
             }
         }
 
-        private static bool IsAutoGradeSeparatedTargetCovered(
+        private static bool IsAutoGradeSeparatedThroatCovered(
             CrossingPlacementRecord placement,
             CrossingPlacementPlan plan,
             CrossingPlacementRecord[] plannedPlacements,
@@ -688,8 +700,11 @@ namespace PedestrianCrossingToolkit
                 if (asset.Id == 0 || !IsGradeSeparatedMode(asset.Placement.Mode))
                     continue;
 
-                if (GetGradeSeparatedTargetNode(asset.Placement, asset.Plan) == targetNodeId)
+                if (GetGradeSeparatedTargetNode(asset.Placement, asset.Plan) == targetNodeId
+                    && IsSamePlacementThroat(asset.Placement, placement))
+                {
                     return true;
+                }
             }
 
             if (plannedPlacements == null)
@@ -701,11 +716,28 @@ namespace PedestrianCrossingToolkit
                 if (!IsGradeSeparatedMode(existing.Mode))
                     continue;
 
-                if (GetGradeSeparatedTargetNode(existing, CrossingPlacementPlan.Invalid) == targetNodeId)
+                if (GetGradeSeparatedTargetNode(existing, CrossingPlacementPlan.Invalid) == targetNodeId
+                    && IsSamePlacementThroat(existing, placement))
+                {
                     return true;
+                }
             }
 
             return false;
+        }
+
+        private static bool IsSamePlacementThroat(CrossingPlacementRecord existing, CrossingPlacementRecord candidate)
+        {
+            if (existing.SegmentId == 0 || candidate.SegmentId == 0)
+                return false;
+
+            if (existing.SegmentId == candidate.SegmentId)
+                return true;
+
+            if (existing.HasSecondaryPoint && existing.SecondarySegmentId == candidate.SegmentId)
+                return true;
+
+            return candidate.HasSecondaryPoint && candidate.SecondarySegmentId == existing.SegmentId;
         }
 
         private static ushort GetGradeSeparatedTargetNode(CrossingPlacementRecord placement, CrossingPlacementPlan plan)
@@ -724,6 +756,220 @@ namespace PedestrianCrossingToolkit
             return mode == PedestrianToolMode.SubwayLink
                    || mode == PedestrianToolMode.SubwayPointToPoint
                    || mode == PedestrianToolMode.PedestrianBridge;
+        }
+
+        private static bool IsSubwayMode(PedestrianToolMode mode)
+        {
+            return mode == PedestrianToolMode.SubwayLink
+                   || mode == PedestrianToolMode.SubwayPointToPoint;
+        }
+
+        private static bool IsContinuousRoadCrossingCovered(
+            ushort segmentId,
+            CrossingPlacementRecord[] plannedPlacements,
+            int plannedCount)
+        {
+            if (segmentId == 0)
+                return false;
+
+            int existingCount = CrossingPlacementRegistry.CopyTo(ExistingAssetBuffer);
+            for (int i = 0; i < existingCount; i++)
+            {
+                CrossingPlacementAsset asset = ExistingAssetBuffer[i];
+                if (asset.Id == 0 || !IsAutoManagedRoadCrossingMode(asset.Placement.Mode))
+                    continue;
+
+                if (IsSameContinuousRoad(segmentId, asset.Placement.SegmentId)
+                    || (asset.Placement.HasSecondaryPoint && IsSameContinuousRoad(segmentId, asset.Placement.SecondarySegmentId)))
+                {
+                    return true;
+                }
+            }
+
+            if (plannedPlacements == null)
+                return false;
+
+            for (int i = 0; i < plannedCount && i < plannedPlacements.Length; i++)
+            {
+                CrossingPlacementRecord planned = plannedPlacements[i];
+                if (!IsAutoManagedRoadCrossingMode(planned.Mode))
+                    continue;
+
+                if (IsSameContinuousRoad(segmentId, planned.SegmentId)
+                    || (planned.HasSecondaryPoint && IsSameContinuousRoad(segmentId, planned.SecondarySegmentId)))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsAutoManagedRoadCrossingMode(PedestrianToolMode mode)
+        {
+            return mode == PedestrianToolMode.MidBlockCrossing
+                   || mode == PedestrianToolMode.SignalCrossing
+                   || IsGradeSeparatedMode(mode);
+        }
+
+        private static bool IsSameContinuousRoad(ushort startSegmentId, ushort targetSegmentId)
+        {
+            if (startSegmentId == 0 || targetSegmentId == 0)
+                return false;
+
+            if (startSegmentId == targetSegmentId)
+                return true;
+
+            NetManager netManager = NetManager.instance;
+            NetSegment startSegment;
+            NetSegment targetSegment;
+            if (netManager == null
+                || !TryGetCreatedRoadSegment(netManager, startSegmentId, out startSegment)
+                || !TryGetCreatedRoadSegment(netManager, targetSegmentId, out targetSegment))
+            {
+                return false;
+            }
+
+            ushort[] queue = new ushort[ContinuousRoadTraversalLimit];
+            int read = 0;
+            int write = 0;
+            queue[write++] = startSegmentId;
+
+            while (read < write)
+            {
+                ushort currentSegmentId = queue[read++];
+                if (currentSegmentId == targetSegmentId)
+                    return true;
+
+                NetSegment currentSegment;
+                if (!TryGetCreatedRoadSegment(netManager, currentSegmentId, out currentSegment))
+                    continue;
+
+                QueueStraightRoadContinuation(netManager, currentSegmentId, ref currentSegment, currentSegment.m_startNode, queue, ref write);
+                QueueStraightRoadContinuation(netManager, currentSegmentId, ref currentSegment, currentSegment.m_endNode, queue, ref write);
+            }
+
+            return false;
+        }
+
+        private static void QueueStraightRoadContinuation(
+            NetManager netManager,
+            ushort currentSegmentId,
+            ref NetSegment currentSegment,
+            ushort nodeId,
+            ushort[] queue,
+            ref int write)
+        {
+            if (queue == null || write >= queue.Length)
+                return;
+
+            ushort continuation;
+            if (!TryGetStraightRoadContinuation(netManager, currentSegmentId, ref currentSegment, nodeId, out continuation))
+                return;
+
+            for (int i = 0; i < write; i++)
+            {
+                if (queue[i] == continuation)
+                    return;
+            }
+
+            queue[write++] = continuation;
+        }
+
+        private static bool TryGetStraightRoadContinuation(
+            NetManager netManager,
+            ushort currentSegmentId,
+            ref NetSegment currentSegment,
+            ushort nodeId,
+            out ushort continuationSegmentId)
+        {
+            continuationSegmentId = 0;
+            if (nodeId == 0 || nodeId >= netManager.m_nodes.m_size)
+                return false;
+
+            ref NetNode node = ref netManager.m_nodes.m_buffer[nodeId];
+            if ((node.m_flags & NetNode.Flags.Created) == 0)
+                return false;
+
+            ushort otherSegmentId = 0;
+            int roadSegmentCount = 0;
+            for (int i = 0; i < NetNodeSegmentSlotCount; i++)
+            {
+                ushort candidateSegmentId = node.GetSegment(i);
+                if (candidateSegmentId == 0)
+                    continue;
+
+                NetSegment candidateSegment;
+                if (!TryGetCreatedRoadSegment(netManager, candidateSegmentId, out candidateSegment))
+                    continue;
+
+                roadSegmentCount++;
+                if (candidateSegmentId != currentSegmentId)
+                    otherSegmentId = candidateSegmentId;
+            }
+
+            if (roadSegmentCount != 2 || otherSegmentId == 0)
+                return false;
+
+            NetSegment otherSegment;
+            if (!TryGetCreatedRoadSegment(netManager, otherSegmentId, out otherSegment))
+                return false;
+
+            Vector3 currentDirection;
+            Vector3 otherDirection;
+            if (!TryGetDirectionAwayFromNode(netManager, ref currentSegment, nodeId, out currentDirection)
+                || !TryGetDirectionAwayFromNode(netManager, ref otherSegment, nodeId, out otherDirection))
+            {
+                return false;
+            }
+
+            if (Vector3.Dot(currentDirection, otherDirection) > -0.75f)
+                return false;
+
+            continuationSegmentId = otherSegmentId;
+            return true;
+        }
+
+        private static bool TryGetCreatedRoadSegment(NetManager netManager, ushort segmentId, out NetSegment segment)
+        {
+            segment = default(NetSegment);
+            if (netManager == null || segmentId == 0 || segmentId >= netManager.m_segments.m_size)
+                return false;
+
+            segment = netManager.m_segments.m_buffer[segmentId];
+            return (segment.m_flags & NetSegment.Flags.Created) != 0
+                   && segment.Info != null
+                   && segment.Info.m_netAI is RoadBaseAI
+                   && segment.m_startNode != 0
+                   && segment.m_endNode != 0;
+        }
+
+        private static bool TryGetDirectionAwayFromNode(
+            NetManager netManager,
+            ref NetSegment segment,
+            ushort nodeId,
+            out Vector3 direction)
+        {
+            direction = Vector3.zero;
+            ushort otherNodeId;
+            if (segment.m_startNode == nodeId)
+                otherNodeId = segment.m_endNode;
+            else if (segment.m_endNode == nodeId)
+                otherNodeId = segment.m_startNode;
+            else
+                return false;
+
+            if (otherNodeId == 0 || otherNodeId >= netManager.m_nodes.m_size)
+                return false;
+
+            direction = netManager.m_nodes.m_buffer[otherNodeId].m_position
+                        - netManager.m_nodes.m_buffer[nodeId].m_position;
+            direction.y = 0f;
+            if (direction.sqrMagnitude <= 0.01f)
+                return false;
+
+            direction.Normalize();
+            return true;
         }
 
         public static ObservationSession BeginObservation(float durationSeconds)
@@ -774,6 +1020,7 @@ namespace PedestrianCrossingToolkit
             else
             {
                 ScanImpactedJunctions(netManager, accumulator);
+                ScanLongRoadSegments(netManager, accumulator);
                 ScanExistingSurfaceCrossings(netManager, accumulator);
             }
 
@@ -820,10 +1067,11 @@ namespace PedestrianCrossingToolkit
             for (int i = 0; i < count && session.CandidateCount < MaxObservationCandidates; i++)
             {
                 CrossingPlacementAsset asset = ExistingAssetBuffer[i];
-                if (asset.Id == 0 || asset.Placement.Mode != PedestrianToolMode.MidBlockCrossing || !asset.Plan.IsValid)
+                if (asset.Id == 0 || !asset.Plan.IsValid)
                     continue;
 
-                session.AddSurfaceCandidate(asset);
+                if (asset.Placement.Mode == PedestrianToolMode.MidBlockCrossing)
+                    session.AddSurfaceCandidate(asset);
             }
         }
 
@@ -857,33 +1105,78 @@ namespace PedestrianCrossingToolkit
                 if ((node.m_flags & NetNode.Flags.Created) == 0 || !RoadPlacementRules.IsThreePlusJunctionNode(nodeId))
                     continue;
 
-                ushort segmentId;
-                RoadPlacementRules.VanillaCrossingPoint crossingPoint;
-                if (!TryGetBestVanillaCrossingAtNode(netManager, nodeId, out segmentId, out crossingPoint))
-                    continue;
+                bool countedNode = false;
+                for (int i = 0; i < NetNodeSegmentSlotCount && accumulator.HasPlacementCapacity(); i++)
+                {
+                    ushort segmentId = node.GetSegment(i);
+                    if (segmentId == 0 || segmentId >= netManager.m_segments.m_size)
+                        continue;
 
-                accumulator.ScannedNodes++;
-                TrafficCounts counts = CountTrafficNear(crossingPoint.WorldPosition, HotspotPedestrianRadius, HotspotVehicleRadius);
-                if (counts.Pedestrians < HotspotPedestrianThreshold
-                    || counts.WaitingPedestrians < HotspotWaitingPedestrianThreshold
-                    || counts.Vehicles < HotspotVehicleThreshold)
+                    ref NetSegment segment = ref netManager.m_segments.m_buffer[segmentId];
+                    if ((segment.m_flags & NetSegment.Flags.Created) == 0 || !RoadPlacementRules.IsRoadGradeSeparatedPlacementTarget(segmentId))
+                        continue;
+
+                    bool isEnd = segment.m_endNode == nodeId;
+                    if (!isEnd && segment.m_startNode != nodeId)
+                        continue;
+
+                    RoadPlacementRules.VanillaCrossingPoint crossingPoint;
+                    if (!RoadPlacementRules.TryGetActualVanillaCrossingPoint(segmentId, isEnd, out crossingPoint))
+                        continue;
+
+                    if (!countedNode)
+                    {
+                        accumulator.ScannedNodes++;
+                        countedNode = true;
+                    }
+
+                    TrafficCounts counts = CountTrafficNear(crossingPoint.WorldPosition, HotspotPedestrianRadius, HotspotVehicleRadius);
+                    if (counts.Pedestrians < HotspotPedestrianThreshold
+                        || counts.WaitingPedestrians < HotspotWaitingPedestrianThreshold
+                        || counts.Vehicles < HotspotVehicleThreshold)
+                    {
+                        continue;
+                    }
+
+                    accumulator.Hotspots++;
+                    CrossingPlacementRecord placement;
+                    CrossingPlacementPlan plan;
+                    if (TryCreateGradeSeparatedJunctionPlacement(nodeId, segmentId, crossingPoint.WorldPosition, accumulator, out placement, out plan))
+                        accumulator.TryAddPlacement(placement, plan);
+                    else
+                        accumulator.Reject("no legal subway or bridge placement found at impacted junction");
+                }
+            }
+        }
+
+        private static void ScanLongRoadSegments(NetManager netManager, AutoScanAccumulator accumulator)
+        {
+            for (ushort segmentId = 1; segmentId < netManager.m_segments.m_size; segmentId++)
+            {
+                if (!accumulator.HasPlacementCapacity())
+                    break;
+
+                ref NetSegment segment = ref netManager.m_segments.m_buffer[segmentId];
+                if ((segment.m_flags & NetSegment.Flags.Created) == 0
+                    || !RoadPlacementRules.AllowsSurfaceCrossing(segmentId)
+                    || segment.m_averageLength < LongSegmentMinimumLength)
                 {
                     continue;
                 }
 
-                accumulator.Hotspots++;
+                accumulator.ScannedLongRoadSegments++;
                 CrossingPlacementRecord placement;
                 CrossingPlacementPlan plan;
-                if (TryCreateRoadPlacement(PedestrianToolMode.SubwayLink, segmentId, crossingPoint.WorldPosition, out placement, out plan)
-                    || TryCreateRoadPlacement(PedestrianToolMode.PedestrianBridge, segmentId, crossingPoint.WorldPosition, out placement, out plan))
-                {
-                    if (accumulator.TryAddPlacement(placement, plan))
-                        AddLongSegmentCompensationCrossings(netManager, nodeId, accumulator);
-                }
-                else
-                {
-                    accumulator.Reject("no legal subway or bridge placement found at impacted junction");
-                }
+                if (!TryCreateSurfaceCompensationPlacement(netManager, segmentId, ref segment, out placement, out plan))
+                    continue;
+
+                TrafficCounts counts = CountPedestriansNear(placement.WorldPosition, LongRoadPedestrianRadius);
+                if (counts.Pedestrians < LongRoadPedestrianThreshold)
+                    continue;
+
+                accumulator.Hotspots++;
+                if (!accumulator.TryAddPlacement(placement, plan))
+                    accumulator.Reject("long road already has an auto-managed crossing");
             }
         }
 
@@ -993,6 +1286,34 @@ namespace PedestrianCrossingToolkit
             }
         }
 
+        private static void RememberCompensationNode(ushort[] nodeIds, ref int count, ushort nodeId)
+        {
+            if (nodeIds == null || nodeId == 0 || count >= nodeIds.Length)
+                return;
+
+            for (int i = 0; i < count; i++)
+            {
+                if (nodeIds[i] == nodeId)
+                    return;
+            }
+
+            nodeIds[count++] = nodeId;
+        }
+
+        private static void AddDeferredLongSegmentCompensationCrossings(
+            NetManager netManager,
+            ushort[] nodeIds,
+            int count,
+            AutoScanAccumulator accumulator)
+        {
+            if (netManager == null || nodeIds == null || count <= 0 || !accumulator.HasPlacementCapacity())
+                return;
+
+            int max = Math.Min(count, nodeIds.Length);
+            for (int i = 0; i < max && accumulator.HasPlacementCapacity(); i++)
+                AddLongSegmentCompensationCrossings(netManager, nodeIds[i], accumulator);
+        }
+
         private static bool TryFindLegalSignalReplacement(
             NetManager netManager,
             CrossingPlacementAsset asset,
@@ -1092,6 +1413,87 @@ namespace PedestrianCrossingToolkit
 
                 candidates[j + 1] = current;
             }
+        }
+
+        private static bool TryCreateGradeSeparatedJunctionPlacement(
+            ushort nodeId,
+            ushort segmentId,
+            Vector3 referencePosition,
+            AutoScanAccumulator accumulator,
+            out CrossingPlacementRecord placement,
+            out CrossingPlacementPlan plan)
+        {
+            placement = CrossingPlacementRecord.None;
+            plan = CrossingPlacementPlan.Invalid;
+
+            PedestrianToolMode preferredMode;
+            bool hasPreferredMode = TryGetPreferredGradeSeparatedModeForJunction(nodeId, accumulator, out preferredMode);
+            if (!hasPreferredMode)
+                preferredMode = GetRandomGradeSeparatedMode();
+
+            if (TryCreateRoadPlacement(preferredMode, segmentId, referencePosition, out placement, out plan))
+                return true;
+
+            if (hasPreferredMode)
+                return false;
+
+            PedestrianToolMode fallbackMode = preferredMode == PedestrianToolMode.PedestrianBridge
+                ? PedestrianToolMode.SubwayLink
+                : PedestrianToolMode.PedestrianBridge;
+            return TryCreateRoadPlacement(fallbackMode, segmentId, referencePosition, out placement, out plan);
+        }
+
+        private static bool TryGetPreferredGradeSeparatedModeForJunction(
+            ushort nodeId,
+            AutoScanAccumulator accumulator,
+            out PedestrianToolMode mode)
+        {
+            mode = PedestrianToolMode.None;
+            if (nodeId == 0)
+                return false;
+
+            int existingCount = CrossingPlacementRegistry.CopyTo(ExistingAssetBuffer);
+            for (int i = 0; i < existingCount; i++)
+            {
+                CrossingPlacementAsset asset = ExistingAssetBuffer[i];
+                if (asset.Id == 0 || !IsGradeSeparatedMode(asset.Placement.Mode))
+                    continue;
+
+                if (GetGradeSeparatedTargetNode(asset.Placement, asset.Plan) != nodeId)
+                    continue;
+
+                mode = IsSubwayMode(asset.Placement.Mode)
+                    ? PedestrianToolMode.SubwayLink
+                    : PedestrianToolMode.PedestrianBridge;
+                return true;
+            }
+
+            if (accumulator == null)
+                return false;
+
+            for (int i = 0; i < accumulator.PlacementCount && i < accumulator.Placements.Length; i++)
+            {
+                CrossingPlacementRecord placement = accumulator.Placements[i];
+                if (!IsGradeSeparatedMode(placement.Mode))
+                    continue;
+
+                if (GetGradeSeparatedTargetNode(placement, CrossingPlacementPlan.Invalid) != nodeId)
+                    continue;
+
+                mode = IsSubwayMode(placement.Mode)
+                    ? PedestrianToolMode.SubwayLink
+                    : PedestrianToolMode.PedestrianBridge;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static PedestrianToolMode GetRandomGradeSeparatedMode()
+        {
+            return UnityEngine.Random.value < 0.5f
+                ? PedestrianToolMode.SubwayLink
+                : PedestrianToolMode.PedestrianBridge;
         }
 
         private static bool TryCreateRoadPlacement(

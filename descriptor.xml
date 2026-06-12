@@ -2,7 +2,7 @@
 <ModMetaData>
   <name>Pedestrian Crossing Toolkit</name>
   <author>ScratchyBald</author>
-  <version>1.0.4</version>
+  <version>1.1.0</version>
   <assembly>PedestrianCrossingToolkit.dll</assembly>
   <description>A precision toolkit for smarter pedestrian networks: add connector-based surface crossings, demand-led signal crossings, compact subway links, and generated bridge crossings without destructive road splitting.</description>
   <url></url>

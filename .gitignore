@@ -1,17 +1,3 @@
-# Local guidance / working notes
-AGENTS.md
-DESIGN_PRINCIPLES.md
-AutoPublicTransportMod/DESIGN_PRINCIPLES.md
-ISSUES_AND_PLANS.md
-RESOLVED_ISSUES.md
-COMPATIBILITY_WATCHLIST_LOCAL.md
-
-# Local build/deploy scripts
-build+deploy.sh
-
-# macOS metadata
-.DS_Store
-
 # Build outputs
 bin/
 obj/
@@ -24,17 +10,8 @@ obj/
 *.il
 *.res
 
-# Local/editor noise
+# IDE/user-local files
+.vs/
 .vscode/
-outputs/
-scripts/
-
-# Public GitHub source sharing guardrail:
-# mod folders should only track README.md, C# source files, project files, and descriptor metadata.
-*Mod/**
-!*Mod/
-!*Mod/**/
-!*Mod/**/README.md
-!*Mod/**/*.cs
-!*Mod/**/*.csproj
-!*Mod/**/descriptor.xml
+*.user
+*.suo
