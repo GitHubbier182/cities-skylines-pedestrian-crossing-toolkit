@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>Pedestrian Crossing Toolkit</name>
+  <author>ScratchyBald</author>
+  <version>1.0.4</version>
+  <assembly>PedestrianCrossingToolkit.dll</assembly>
+  <description>A precision toolkit for smarter pedestrian networks: add connector-based surface crossings, demand-led signal crossings, compact subway links, and generated bridge crossings without destructive road splitting.</description>
+  <url></url>
+  <tags>Transport;Pedestrian;Crossing;Traffic;Roads;Walking</tags>
+  <enabled>true</enabled>
+  <supportedVersions>
+    <version>1.0</version>
+  </supportedVersions>
+</ModMetaData>
