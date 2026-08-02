@@ -14,12 +14,18 @@
     <EnableNuGetPackageRestore>false</EnableNuGetPackageRestore>
     <ResolveNuGetPackages>false</ResolveNuGetPackages>
     <RestoreTargets> </RestoreTargets>
+    <CitiesHarmonyPath Condition=" '$(CitiesHarmonyPath)' == '' ">$(HOME)/Library/Application Support/Steam/steamapps/workshop/content/255710/2040656402/CitiesHarmony.Harmony.dll</CitiesHarmonyPath>
     <Optimize>true</Optimize>
     <WarningLevel>4</WarningLevel>
     <OutputPath>bin\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>obj\$(Configuration)\</IntermediateOutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
+
+  <Target Name="ValidateCitiesHarmonyPath" BeforeTargets="ResolveReferences" Condition=" !Exists('$(CitiesHarmonyPath)') ">
+    <Error Text="Cities Harmony dependency not found at $(CitiesHarmonyPath). Subscribe to Harmony 2.2.2-0, Workshop item 2040656402, or pass CitiesHarmonyPath." />
+  </Target>
 
   <ItemGroup>
     <Reference Include="Assembly-CSharp">
@@ -42,6 +48,10 @@
       <HintPath>$(HOME)/Library/Application Support/Steam/steamapps/common/Cities_Skylines/Cities.app/Contents/Resources/Data/Managed/UnityEngine.UI.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="CitiesHarmony.Harmony">
+      <HintPath>$(CitiesHarmonyPath)</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
   </ItemGroup>
@@ -50,6 +60,7 @@
     <Compile Include="Shared/OneTimeUpdateNoticePanel.cs" />
     <Compile Include="Shared/ScratchysScanManager.cs" />
     <Compile Include="Shared/UnifiedTransitLauncherToolbar.cs" />
+    <Compile Include="Shared/InternalBuildIdentity.cs" />
     <Compile Include="PedestrianCrossingToolkitMod.cs" />
     <Compile Include="Application/*.cs" />
     <Compile Include="Building/*.cs" />

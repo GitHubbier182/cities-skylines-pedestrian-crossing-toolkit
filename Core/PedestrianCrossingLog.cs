@@ -6,7 +6,10 @@ namespace PedestrianCrossingToolkit
 {
     public static class PedestrianCrossingLog
     {
+        // Development-only execution boundary; never bind this to a player setting.
         public static readonly bool VerboseDiagnostics = false;
+        private const string AdvancedDiagnosticsKey =
+            "PedestrianCrossingToolkit.AdvancedDiagnostics";
         private const string Prefix = "[PedestrianCrossingToolkit]";
         private const string FileName = "PedestrianCrossingToolkit.log";
         private static readonly object SyncRoot = new object();
@@ -15,6 +18,23 @@ namespace PedestrianCrossingToolkit
         private static StreamWriter _writer;
         private static int _linesSinceFlush;
         private static DateTime _lastFlushUtc;
+
+        public static bool AdvancedDiagnostics
+        {
+            get { return PlayerPrefs.GetInt(AdvancedDiagnosticsKey, 0) != 0; }
+            set
+            {
+                bool changed = AdvancedDiagnostics != value;
+                PlayerPrefs.SetInt(AdvancedDiagnosticsKey, value ? 1 : 0);
+                PlayerPrefs.Save();
+                if (changed)
+                {
+                    UnityInfo(
+                        "Advanced diagnostics " +
+                        (value ? "enabled." : "disabled."));
+                }
+            }
+        }
 
         public static string LogPath
         {
@@ -76,6 +96,28 @@ namespace PedestrianCrossingToolkit
         public static void Info(string message)
         {
             AppendLine("Info", FormatMessage(message));
+        }
+
+        public static void Advanced(string message)
+        {
+            if (AdvancedDiagnostics)
+                Debug.Log(FormatMessage(message));
+        }
+
+        public static void AdvancedWarning(string message)
+        {
+            if (AdvancedDiagnostics)
+                Debug.LogWarning(FormatMessage(message));
+        }
+
+        public static void Warning(string message)
+        {
+            Debug.LogWarning(FormatMessage(message));
+        }
+
+        public static void UnityInfo(string message)
+        {
+            Debug.Log(FormatMessage(message));
         }
 
         private static void OnUnityLogMessage(string condition, string stackTrace, LogType type)

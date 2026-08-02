@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using ColossalFramework.UI;
 using UnityEngine;
 
@@ -436,6 +438,216 @@ namespace ScratchyBald.CitiesSkylines.UI
                 return 0f;
 
             return Mathf.Clamp01(value / size);
+        }
+    }
+
+    internal static class ExternalUnifiedUiBridge
+    {
+        private const string ApiTypeName = "UnifiedUI.API.UUIAPI";
+        private const string MainPanelTypeName = "UnifiedUI.GUI.MainPanel";
+        private const string GroupName = "ScratchyBald";
+
+        private static readonly Dictionary<string, UIComponent> RegisteredButtons =
+            new Dictionary<string, UIComponent>(StringComparer.Ordinal);
+
+        public static bool TryRegisterButton(
+            string name,
+            string tooltip,
+            UITextureAtlas atlas,
+            string normalSprite,
+            string hoveredSprite,
+            string pressedSprite,
+            string disabledSprite,
+            Action<bool> onToggle)
+        {
+            if (string.IsNullOrEmpty(name) || atlas == null || onToggle == null)
+                return false;
+
+            UIComponent existing;
+            if (RegisteredButtons.TryGetValue(name, out existing) && existing != null)
+                return true;
+
+            try
+            {
+                Type apiType = FindApiType();
+                MethodInfo register = FindAtlasRegistrationMethod(apiType);
+                if (register == null)
+                    return false;
+
+                ParameterInfo[] registrationParameters = register.GetParameters();
+                object[] arguments = new object[registrationParameters.Length];
+                arguments[0] = name;
+                arguments[1] = GroupName;
+                arguments[2] = tooltip;
+                arguments[3] = atlas;
+                arguments[4] = new[] { normalSprite, hoveredSprite, pressedSprite, disabledSprite };
+                arguments[5] = onToggle;
+
+                object result = register.Invoke(
+                    null,
+                    arguments);
+
+                UIComponent button = result as UIComponent;
+                if (button == null)
+                    return false;
+
+                RegisteredButtons[name] = button;
+                Debug.Log("[ScratchyBaldUUI] Registered " + name + " with external Unified UI.");
+                return true;
+            }
+            catch (TargetInvocationException e)
+            {
+                Exception cause = e.InnerException ?? e;
+                Debug.LogWarning("[ScratchyBaldUUI] External Unified UI registration failed for "
+                                 + name
+                                 + ": "
+                                 + cause.Message);
+                return false;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[ScratchyBaldUUI] External Unified UI registration failed for "
+                                 + name
+                                 + ": "
+                                 + e.Message);
+                return false;
+            }
+        }
+
+        public static void SetPressed(string name, bool pressed)
+        {
+            UIComponent button;
+            if (string.IsNullOrEmpty(name)
+                || !RegisteredButtons.TryGetValue(name, out button)
+                || button == null)
+            {
+                return;
+            }
+
+            try
+            {
+                PropertyInfo property = button.GetType().GetProperty(
+                    "IsActive",
+                    BindingFlags.Instance | BindingFlags.Public);
+                if (property != null && property.CanWrite)
+                    property.SetValue(button, pressed, null);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[ScratchyBaldUUI] Failed to synchronize " + name + ": " + e.Message);
+            }
+        }
+
+        public static void SetEnabled(string name, bool enabled)
+        {
+            UIComponent button;
+            if (string.IsNullOrEmpty(name)
+                || !RegisteredButtons.TryGetValue(name, out button)
+                || button == null)
+            {
+                return;
+            }
+
+            button.isEnabled = enabled;
+        }
+
+        public static void SetVisualState(string name, Color32 color, string tooltip)
+        {
+            UIComponent button;
+            if (string.IsNullOrEmpty(name)
+                || !RegisteredButtons.TryGetValue(name, out button)
+                || button == null)
+            {
+                return;
+            }
+
+            button.color = color;
+            button.tooltip = tooltip ?? string.Empty;
+        }
+
+        public static void ReleaseButton(string name)
+        {
+            UIComponent button;
+            if (string.IsNullOrEmpty(name) || !RegisteredButtons.TryGetValue(name, out button))
+                return;
+
+            RegisteredButtons.Remove(name);
+            if (button != null)
+                UnityEngine.Object.Destroy(button.gameObject);
+        }
+
+        private static Type FindApiType()
+        {
+            Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            for (int i = 0; i < assemblies.Length; i++)
+            {
+                Type apiType = assemblies[i].GetType(ApiTypeName, false);
+                if (apiType != null && HasActiveMainPanel(assemblies[i]))
+                    return apiType;
+            }
+
+            return null;
+        }
+
+        private static bool HasActiveMainPanel(Assembly assembly)
+        {
+            if (assembly == null)
+                return false;
+
+            try
+            {
+                Type mainPanelType = assembly.GetType(MainPanelTypeName, false);
+                if (mainPanelType == null)
+                    return false;
+
+                PropertyInfo exists = mainPanelType.GetProperty(
+                    "Exists",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (exists != null && exists.PropertyType == typeof(bool))
+                    return (bool)exists.GetValue(null, null);
+
+                PropertyInfo rowInstance = mainPanelType.GetProperty(
+                    "RowInstance_",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (rowInstance == null)
+                    return false;
+
+                UnityEngine.Object activePanel =
+                    rowInstance.GetValue(null, null) as UnityEngine.Object;
+                return activePanel != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static MethodInfo FindAtlasRegistrationMethod(Type apiType)
+        {
+            if (apiType == null)
+                return null;
+
+            MethodInfo[] methods = apiType.GetMethods(BindingFlags.Public | BindingFlags.Static);
+            for (int i = 0; i < methods.Length; i++)
+            {
+                MethodInfo method = methods[i];
+                if (!string.Equals(method.Name, "Register", StringComparison.Ordinal))
+                    continue;
+
+                ParameterInfo[] parameters = method.GetParameters();
+                if ((parameters.Length == 8 || parameters.Length == 9)
+                    && parameters[0].ParameterType == typeof(string)
+                    && parameters[1].ParameterType == typeof(string)
+                    && parameters[2].ParameterType == typeof(string)
+                    && parameters[3].ParameterType == typeof(UITextureAtlas)
+                    && parameters[4].ParameterType == typeof(string[])
+                    && parameters[5].ParameterType == typeof(Action<bool>))
+                {
+                    return method;
+                }
+            }
+
+            return null;
         }
     }
 }

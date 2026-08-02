@@ -134,9 +134,9 @@ namespace PedestrianCrossingToolkit
 
     public static class CrossingAutoScanPlanner
     {
-        public const int MaxPlannedPlacements = 50;
+        public const int MaxPlannedPlacements = 100;
         private const int MaxPlannedRemovals = MaxPlannedPlacements;
-        private const int MaxObservationCandidates = 4096;
+        private const int InitialObservationCandidateCapacity = 4096;
         private const int GridTraversalLimit = 65536;
         private const int NetNodeSegmentSlotCount = 8;
         private const int ContinuousRoadTraversalLimit = 128;
@@ -144,23 +144,22 @@ namespace PedestrianCrossingToolkit
 
         private const float CrossingTraversalRadius = 2.75f;
         private const float CrossingTraversalDirectionDot = 0.25f;
-        private const float StraightRoadMinimumUncoveredLength = 600f;
+        private const float RoadObservationCandidateSpacing = 125f;
         private const float PavementInnerTolerance = 3f;
         private const float PavementOuterTolerance = 10f;
         private const float SignalRelocationMaxDistance = 140f;
         internal const float AutoPlacementMinimumSpacing = 250f;
+        private const float LongRoadObservationHalfLength = 100f;
         private const float SlowPedestrianSpeedSqr = 0.04f;
 
-        private const int BusyCrossingPedestrianSightingsThreshold = 1;
+        private const int BusyCrossingPedestrianSightingsThreshold = 6;
         private const int LongRoadPedestrianThreshold = 10;
 
         private static readonly float[] SurfaceCandidatePositions = new[] { 0.50f, 0.42f, 0.58f, 0.34f, 0.66f };
-        private static readonly int[] ObservationOrderBuffer = new int[MaxObservationCandidates];
+        private static int[] ObservationOrderBuffer = new int[InitialObservationCandidateCapacity];
         private static readonly ushort[] CorridorSegmentBuffer = new ushort[ContinuousRoadTraversalLimit];
         private static readonly bool[] CorridorForwardBuffer = new bool[ContinuousRoadTraversalLimit];
-        private static readonly float[] CorridorBoundaryBuffer = new float[ExistingAssetBufferCapacity + 2];
         private static readonly HashSet<ushort> PavementPedestrianIds = new HashSet<ushort>();
-        private const int ExistingAssetBufferCapacity = 65536;
 
         private struct TrafficCounts
         {
@@ -252,8 +251,9 @@ namespace PedestrianCrossingToolkit
             private const int CandidatesPerFrame = 64;
             private const int NetworkRecordsPerFrame = 512;
             private const float SlowBatchWarningMs = 50f;
-            private readonly ObservationCandidate[] _candidates = new ObservationCandidate[MaxObservationCandidates];
+            private ObservationCandidate[] _candidates = new ObservationCandidate[InitialObservationCandidateCapacity];
             private readonly bool[] _continuousRoadSegmentsVisited = new bool[ushort.MaxValue + 1];
+            private readonly HashSet<long> _junctionCandidateKeys = new HashSet<long>();
             private readonly float _durationSeconds;
             private float _elapsedSeconds;
             private float _nextSampleSeconds;
@@ -303,6 +303,42 @@ namespace PedestrianCrossingToolkit
                 get { return Mathf.Max(0f, _durationSeconds - _elapsedSeconds); }
             }
 
+            public int ProgressPercent
+            {
+                get
+                {
+                    if (!_candidatesReady)
+                        return 0;
+                    if (IsComplete)
+                        return 100;
+
+                    return Mathf.Clamp(
+                        Mathf.FloorToInt((_elapsedSeconds * 100f) / _durationSeconds),
+                        1,
+                        99);
+                }
+            }
+
+            public string ProgressDetail
+            {
+                get
+                {
+                    if (!_candidatesReady)
+                    {
+                        return "Preparing "
+                               + CandidateCount
+                               + " observation area"
+                               + (CandidateCount == 1 ? string.Empty : "s");
+                    }
+
+                    return Mathf.CeilToInt(RemainingSeconds)
+                           + "s remaining  •  "
+                           + CandidateCount
+                           + " observation area"
+                           + (CandidateCount == 1 ? string.Empty : "s");
+                }
+            }
+
             public bool HasSamples
             {
                 get { return SampleCount > 0; }
@@ -338,7 +374,7 @@ namespace PedestrianCrossingToolkit
                 {
                     return "Scanning crossings, please wait: preparing "
                            + CandidateCount
-                           + " candidate"
+                           + " observation area"
                            + (CandidateCount == 1 ? string.Empty : "s")
                            + ".";
                 }
@@ -347,7 +383,7 @@ namespace PedestrianCrossingToolkit
                        + Mathf.CeilToInt(RemainingSeconds)
                        + "s remaining. Monitoring "
                        + CandidateCount
-                       + " candidate"
+                       + " observation area"
                        + (CandidateCount == 1 ? string.Empty : "s")
                        + ".";
             }
@@ -368,7 +404,7 @@ namespace PedestrianCrossingToolkit
                 ScanObservedLongRoadSegments(netManager, accumulator);
 
                 CrossingAutoScanPlan plan = accumulator.ToPlan();
-                Debug.Log("[PedestrianCrossingToolkit] Auto scan planned from observation: samples="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Auto scan planned from observation: samples="
                           + SampleCount
                           + " candidates="
                           + CandidateCount
@@ -379,9 +415,6 @@ namespace PedestrianCrossingToolkit
 
             public void AddJunctionCandidate(ushort nodeId, ushort segmentId, RoadPlacementRules.VanillaCrossingPoint crossingPoint)
             {
-                if (_candidateCount >= _candidates.Length)
-                    return;
-
                 if (CrossingPlacementRegistry.HasAssetWithinHorizontalDistance(
                     crossingPoint.WorldPosition,
                     AutoPlacementMinimumSpacing,
@@ -390,15 +423,9 @@ namespace PedestrianCrossingToolkit
                     return;
                 }
 
-                for (int i = 0; i < _candidateCount; i++)
-                {
-                    if (_candidates[i].Kind == ObservationCandidateKind.ImpactedJunction
-                        && _candidates[i].NodeId == nodeId
-                        && _candidates[i].SegmentId == segmentId)
-                    {
-                        return;
-                    }
-                }
+                long candidateKey = ((long)nodeId << 16) | segmentId;
+                if (!_junctionCandidateKeys.Add(candidateKey))
+                    return;
 
                 Vector3 crossingFirst;
                 Vector3 crossingSecond;
@@ -411,6 +438,7 @@ namespace PedestrianCrossingToolkit
                     return;
                 }
 
+                ManagerCapacity.EnsureArrayCapacity(ref _candidates, _candidateCount + 1);
                 _candidates[_candidateCount++] = new ObservationCandidate
                 {
                     Kind = ObservationCandidateKind.ImpactedJunction,
@@ -427,9 +455,10 @@ namespace PedestrianCrossingToolkit
 
             public void AddExistingCrossingCandidate(CrossingPlacementAsset asset)
             {
-                if (_candidateCount >= _candidates.Length || asset.Id == 0 || !asset.Plan.IsValid)
+                if (asset.Id == 0 || !asset.Plan.IsValid)
                     return;
 
+                ManagerCapacity.EnsureArrayCapacity(ref _candidates, _candidateCount + 1);
                 _candidates[_candidateCount++] = new ObservationCandidate
                 {
                     Kind = asset.Placement.Mode == PedestrianToolMode.SignalCrossing
@@ -465,8 +494,7 @@ namespace PedestrianCrossingToolkit
                 bool[] corridorSegmentForward,
                 int corridorSegmentCount)
             {
-                if (_candidateCount >= _candidates.Length
-                    || placement.SegmentId == 0
+                if (placement.SegmentId == 0
                     || !plan.IsValid)
                     return;
 
@@ -478,6 +506,7 @@ namespace PedestrianCrossingToolkit
                     return;
                 }
 
+                ManagerCapacity.EnsureArrayCapacity(ref _candidates, _candidateCount + 1);
                 _candidates[_candidateCount++] = new ObservationCandidate
                 {
                     Kind = ObservationCandidateKind.LongRoadSegment,
@@ -496,6 +525,7 @@ namespace PedestrianCrossingToolkit
 
             private int BuildCandidateOrder(ObservationCandidateKind kind)
             {
+                ManagerCapacity.EnsureArrayCapacity(ref ObservationOrderBuffer, _candidateCount);
                 int count = 0;
                 for (int i = 0; i < _candidateCount && count < ObservationOrderBuffer.Length; i++)
                 {
@@ -718,7 +748,7 @@ namespace PedestrianCrossingToolkit
                 _sampleInProgress = false;
                 SampleCount++;
                 _nextSampleSeconds = _elapsedSeconds + ObservationSampleIntervalSeconds;
-                Debug.Log("[PedestrianCrossingToolkit] Auto scan observation sample: samples="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Auto scan observation sample: samples="
                           + SampleCount
                           + " candidates="
                           + CandidateCount
@@ -735,9 +765,6 @@ namespace PedestrianCrossingToolkit
                     _candidatesReady = true;
                     return;
                 }
-
-                if (_candidateCount >= MaxObservationCandidates)
-                    _collectionPhase = 3;
 
                 if (_collectionPhase == 0)
                 {
@@ -767,7 +794,7 @@ namespace PedestrianCrossingToolkit
 
                 _candidatesReady = true;
                 WarnIfSlowBatch("candidate-collection", startedAt, _collectionCursor, 0);
-                Debug.Log("[PedestrianCrossingToolkit] Auto scan candidate collection complete: candidates="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Auto scan candidate collection complete: candidates="
                           + CandidateCount
                           + " junctionCandidates="
                           + JunctionCandidateCount
@@ -783,7 +810,7 @@ namespace PedestrianCrossingToolkit
                 if (elapsedMs < SlowBatchWarningMs)
                     return;
 
-                Debug.LogWarning("[PedestrianCrossingToolkit] Slow Auto Scan slice: stage="
+                PedestrianCrossingLog.AdvancedWarning("Slow Auto Scan slice: stage="
                                  + stage
                                  + " elapsedMs="
                                  + elapsedMs.ToString("0.0")
@@ -868,13 +895,6 @@ namespace PedestrianCrossingToolkit
 
                 if (IsGradeSeparatedMode(placement.Mode)
                     && IsAutoGradeSeparatedThroatCovered(placement, plan, Placements, PlacementCount))
-                {
-                    SkippedExisting++;
-                    return false;
-                }
-
-                if (placement.Mode == PedestrianToolMode.MidBlockCrossing
-                    && IsContinuousRoadCrossingCovered(placement.SegmentId, Placements, PlacementCount))
                 {
                     SkippedExisting++;
                     return false;
@@ -1091,121 +1111,6 @@ namespace PedestrianCrossingToolkit
                    || mode == PedestrianToolMode.SubwayPointToPoint;
         }
 
-        private static bool IsContinuousRoadCrossingCovered(
-            ushort segmentId,
-            CrossingPlacementRecord[] plannedPlacements,
-            int plannedCount)
-        {
-            if (segmentId == 0)
-                return false;
-
-            int existingCount = CrossingPlacementRegistry.Count;
-            for (int i = 0; i < existingCount; i++)
-            {
-                CrossingPlacementAsset asset;
-                if (!CrossingPlacementRegistry.TryGetAssetAtIndex(i, out asset))
-                    continue;
-
-                if (asset.Id == 0 || !IsAutoManagedRoadCrossingMode(asset.Placement.Mode))
-                    continue;
-
-                if (IsSameContinuousRoad(segmentId, asset.Placement.SegmentId)
-                    || (asset.Placement.HasSecondaryPoint && IsSameContinuousRoad(segmentId, asset.Placement.SecondarySegmentId)))
-                {
-                    return true;
-                }
-            }
-
-            if (plannedPlacements == null)
-                return false;
-
-            for (int i = 0; i < plannedCount && i < plannedPlacements.Length; i++)
-            {
-                CrossingPlacementRecord planned = plannedPlacements[i];
-                if (!IsAutoManagedRoadCrossingMode(planned.Mode))
-                    continue;
-
-                if (IsSameContinuousRoad(segmentId, planned.SegmentId)
-                    || (planned.HasSecondaryPoint && IsSameContinuousRoad(segmentId, planned.SecondarySegmentId)))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool IsAutoManagedRoadCrossingMode(PedestrianToolMode mode)
-        {
-            return mode == PedestrianToolMode.MidBlockCrossing
-                   || mode == PedestrianToolMode.SignalCrossing
-                   || IsGradeSeparatedMode(mode);
-        }
-
-        private static bool IsSameContinuousRoad(ushort startSegmentId, ushort targetSegmentId)
-        {
-            if (startSegmentId == 0 || targetSegmentId == 0)
-                return false;
-
-            if (startSegmentId == targetSegmentId)
-                return true;
-
-            NetManager netManager = NetManager.instance;
-            NetSegment startSegment;
-            NetSegment targetSegment;
-            if (netManager == null
-                || !TryGetCreatedRoadSegment(netManager, startSegmentId, out startSegment)
-                || !TryGetCreatedRoadSegment(netManager, targetSegmentId, out targetSegment))
-            {
-                return false;
-            }
-
-            ushort[] queue = new ushort[ContinuousRoadTraversalLimit];
-            int read = 0;
-            int write = 0;
-            queue[write++] = startSegmentId;
-
-            while (read < write)
-            {
-                ushort currentSegmentId = queue[read++];
-                if (currentSegmentId == targetSegmentId)
-                    return true;
-
-                NetSegment currentSegment;
-                if (!TryGetCreatedRoadSegment(netManager, currentSegmentId, out currentSegment))
-                    continue;
-
-                QueueStraightRoadContinuation(netManager, currentSegmentId, ref currentSegment, currentSegment.m_startNode, queue, ref write);
-                QueueStraightRoadContinuation(netManager, currentSegmentId, ref currentSegment, currentSegment.m_endNode, queue, ref write);
-            }
-
-            return false;
-        }
-
-        private static void QueueStraightRoadContinuation(
-            NetManager netManager,
-            ushort currentSegmentId,
-            ref NetSegment currentSegment,
-            ushort nodeId,
-            ushort[] queue,
-            ref int write)
-        {
-            if (queue == null || write >= queue.Length)
-                return;
-
-            ushort continuation;
-            if (!TryGetStraightRoadContinuation(netManager, currentSegmentId, ref currentSegment, nodeId, out continuation))
-                return;
-
-            for (int i = 0; i < write; i++)
-            {
-                if (queue[i] == continuation)
-                    return;
-            }
-
-            queue[write++] = continuation;
-        }
-
         private static bool TryGetStraightRoadContinuation(
             NetManager netManager,
             ushort currentSegmentId,
@@ -1310,7 +1215,7 @@ namespace PedestrianCrossingToolkit
                 return session;
 
             RoadPlacementRules.RequestVanillaCrossingCacheRefresh("auto-scan-observation");
-            Debug.Log("[PedestrianCrossingToolkit] Auto scan observation scheduled: duration="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Auto scan observation scheduled: duration="
                       + durationSeconds.ToString("0.0"));
             return session;
         }
@@ -1356,7 +1261,7 @@ namespace PedestrianCrossingToolkit
             }
 
             CrossingAutoScanPlan plan = accumulator.ToPlan();
-            Debug.Log("[PedestrianCrossingToolkit] Auto scan planned: " + plan.Summary.ToLogString());
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Auto scan planned: " + plan.Summary.ToLogString());
             return plan;
         }
 
@@ -1369,12 +1274,6 @@ namespace PedestrianCrossingToolkit
             for (int nodeIndex = nextNodeIndex; nodeIndex < endNodeIndex; nodeIndex++)
             {
                 ushort nodeId = (ushort)nodeIndex;
-                if (session.CandidateCount >= MaxObservationCandidates)
-                {
-                    nextNodeIndex = nodeLimit;
-                    return true;
-                }
-
                 ref NetNode node = ref netManager.m_nodes.m_buffer[nodeId];
                 if ((node.m_flags & NetNode.Flags.Created) == 0 || !RoadPlacementRules.IsThreePlusJunctionNode(nodeId))
                     continue;
@@ -1406,7 +1305,7 @@ namespace PedestrianCrossingToolkit
         private static void CollectSurfaceObservationCandidates(ObservationSession session)
         {
             int count = CrossingPlacementRegistry.Count;
-            for (int i = 0; i < count && session.CandidateCount < MaxObservationCandidates; i++)
+            for (int i = 0; i < count; i++)
             {
                 CrossingPlacementAsset asset;
                 if (!CrossingPlacementRegistry.TryGetAssetAtIndex(i, out asset))
@@ -1429,7 +1328,7 @@ namespace PedestrianCrossingToolkit
                 netManager.m_segments.m_size,
                 netManager.m_segments.m_buffer.Length);
             int endSegmentIndex = Math.Min(segmentLimit, nextSegmentIndex + batchSize);
-            for (int segmentIndex = nextSegmentIndex; segmentIndex < endSegmentIndex && session.CandidateCount < MaxObservationCandidates; segmentIndex++)
+            for (int segmentIndex = nextSegmentIndex; segmentIndex < endSegmentIndex; segmentIndex++)
             {
                 ushort segmentId = (ushort)segmentIndex;
                 if (session.HasVisitedContinuousRoadSegment(segmentId))
@@ -1458,7 +1357,7 @@ namespace PedestrianCrossingToolkit
                     corridorCount);
             }
 
-            nextSegmentIndex = session.CandidateCount >= MaxObservationCandidates ? segmentLimit : endSegmentIndex;
+            nextSegmentIndex = endSegmentIndex;
             return nextSegmentIndex >= segmentLimit;
         }
 
@@ -1579,64 +1478,41 @@ namespace PedestrianCrossingToolkit
                     totalLength += Mathf.Max(1f, segment.m_averageLength);
             }
 
-            if (totalLength <= StraightRoadMinimumUncoveredLength)
+            if (totalLength <= 1f)
                 return;
 
-            int boundaryCount = 0;
-            CorridorBoundaryBuffer[boundaryCount++] = 0f;
-            CorridorBoundaryBuffer[boundaryCount++] = totalLength;
-            int assetCount = CrossingPlacementRegistry.Count;
-            for (int assetIndex = 0;
-                 assetIndex < assetCount && boundaryCount < CorridorBoundaryBuffer.Length;
-                 assetIndex++)
+            AddLocalizedStraightRoadCandidates(
+                netManager,
+                session,
+                segmentIds,
+                forward,
+                max,
+                totalLength);
+        }
+
+        private static void AddLocalizedStraightRoadCandidates(
+            NetManager netManager,
+            ObservationSession session,
+            ushort[] segmentIds,
+            bool[] forward,
+            int segmentCount,
+            float totalLength)
+        {
+            int candidateCount = Mathf.Max(
+                1,
+                Mathf.CeilToInt(totalLength / RoadObservationCandidateSpacing));
+            float candidateSpacing = totalLength / candidateCount;
+            for (int candidateIndex = 0; candidateIndex < candidateCount; candidateIndex++)
             {
-                CrossingPlacementAsset asset;
-                if (!CrossingPlacementRegistry.TryGetAssetAtIndex(assetIndex, out asset)
-                    || asset.Id == 0)
-                {
-                    continue;
-                }
-
-                AddCorridorCrossingBoundary(
-                    netManager,
-                    segmentIds,
-                    forward,
-                    max,
-                    asset.Placement.SegmentId,
-                    asset.Placement.SegmentPosition,
-                    ref boundaryCount);
-                if (asset.Placement.HasSecondaryPoint)
-                {
-                    AddCorridorCrossingBoundary(
-                        netManager,
-                        segmentIds,
-                        forward,
-                        max,
-                        asset.Placement.SecondarySegmentId,
-                        asset.Placement.SecondarySegmentPosition,
-                        ref boundaryCount);
-                }
-            }
-
-            Array.Sort(CorridorBoundaryBuffer, 0, boundaryCount);
-            for (int boundaryIndex = 1;
-                 boundaryIndex < boundaryCount && session.CandidateCount < MaxObservationCandidates;
-                 boundaryIndex++)
-            {
-                float gapStart = CorridorBoundaryBuffer[boundaryIndex - 1];
-                float gapEnd = CorridorBoundaryBuffer[boundaryIndex];
-                if (gapEnd - gapStart <= StraightRoadMinimumUncoveredLength)
-                    continue;
-
-                float midpoint = (gapStart + gapEnd) * 0.5f;
+                float candidateOffset = candidateSpacing * (candidateIndex + 0.5f);
                 ushort placementSegmentId;
                 float placementSegmentPosition;
                 if (!TryResolveCorridorOffset(
                     netManager,
                     segmentIds,
                     forward,
-                    max,
-                    midpoint,
+                    segmentCount,
+                    candidateOffset,
                     out placementSegmentId,
                     out placementSegmentPosition))
                 {
@@ -1644,13 +1520,8 @@ namespace PedestrianCrossingToolkit
                 }
 
                 NetSegment placementSegment;
-                if (!TryGetCreatedRoadSegment(
-                    netManager,
-                    placementSegmentId,
-                    out placementSegment))
-                {
+                if (!TryGetCreatedRoadSegment(netManager, placementSegmentId, out placementSegment))
                     continue;
-                }
 
                 Vector3 sample = GetSegmentSamplePosition(
                     netManager,
@@ -1668,23 +1539,23 @@ namespace PedestrianCrossingToolkit
                     continue;
                 }
 
-                ushort[] candidateSegments;
-                float[] candidateFrom;
-                float[] candidateTo;
-                bool[] candidateForward;
-                int candidateSegmentCount;
+                ushort[] localSegments;
+                float[] localFrom;
+                float[] localTo;
+                bool[] localForward;
+                int localSegmentCount;
                 if (!TryBuildCorridorGapSegments(
                     netManager,
                     segmentIds,
                     forward,
-                    max,
-                    gapStart,
-                    gapEnd,
-                    out candidateSegments,
-                    out candidateFrom,
-                    out candidateTo,
-                    out candidateForward,
-                    out candidateSegmentCount))
+                    segmentCount,
+                    Mathf.Max(0f, candidateOffset - LongRoadObservationHalfLength),
+                    Mathf.Min(totalLength, candidateOffset + LongRoadObservationHalfLength),
+                    out localSegments,
+                    out localFrom,
+                    out localTo,
+                    out localForward,
+                    out localSegmentCount))
                 {
                     continue;
                 }
@@ -1692,49 +1563,11 @@ namespace PedestrianCrossingToolkit
                 session.AddLongRoadCandidate(
                     placement,
                     plan,
-                    candidateSegments,
-                    candidateFrom,
-                    candidateTo,
-                    candidateForward,
-                    candidateSegmentCount);
-            }
-        }
-
-        private static void AddCorridorCrossingBoundary(
-            NetManager netManager,
-            ushort[] segmentIds,
-            bool[] forward,
-            int segmentCount,
-            ushort crossingSegmentId,
-            float crossingSegmentPosition,
-            ref int boundaryCount)
-        {
-            if (crossingSegmentId == 0 || boundaryCount >= CorridorBoundaryBuffer.Length)
-                return;
-
-            float offset = 0f;
-            for (int i = 0; i < segmentCount; i++)
-            {
-                NetSegment segment;
-                if (!TryGetCreatedRoadSegment(netManager, segmentIds[i], out segment))
-                    continue;
-
-                float length = Mathf.Max(1f, segment.m_averageLength);
-                if (segmentIds[i] == crossingSegmentId)
-                {
-                    float position = Mathf.Clamp01(crossingSegmentPosition);
-                    float boundary = offset + (forward[i] ? position : 1f - position) * length;
-                    for (int j = 0; j < boundaryCount; j++)
-                    {
-                        if (Mathf.Abs(CorridorBoundaryBuffer[j] - boundary) <= 1f)
-                            return;
-                    }
-
-                    CorridorBoundaryBuffer[boundaryCount++] = boundary;
-                    return;
-                }
-
-                offset += length;
+                    localSegments,
+                    localFrom,
+                    localTo,
+                    localForward,
+                    localSegmentCount);
             }
         }
 

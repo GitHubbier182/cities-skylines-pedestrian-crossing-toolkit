@@ -1,5 +1,6 @@
 using ColossalFramework.UI;
 using UnityEngine;
+using ExternalUnifiedUiBridge = ScratchyBald.CitiesSkylines.UI.ExternalUnifiedUiBridge;
 using UnifiedTransitLauncherToolbar = ScratchyBald.CitiesSkylines.UI.UnifiedTransitLauncherToolbar;
 
 namespace PedestrianCrossingToolkit
@@ -7,7 +8,7 @@ namespace PedestrianCrossingToolkit
     public class PedestrianCrossingToolkitLauncherButton : UIButton
     {
         private const string ButtonName = "PedestrianCrossingToolkitLauncherButton";
-        private const string IconSpriteName = "PCT_ZebraCrossingLauncherIcon";
+        internal const string IconSpriteName = "PCT_ZebraCrossingLauncherIcon";
 
         public static PedestrianCrossingToolkitLauncherButton Instance;
 
@@ -46,6 +47,7 @@ namespace PedestrianCrossingToolkit
         public override void Update()
         {
             base.Update();
+            isEnabled = !PedestrianCrossingToolkitState.IsAutoScanObservationActive;
             UnifiedTransitLauncherToolbar.RefreshLayoutIfOwned(this);
         }
 
@@ -66,6 +68,20 @@ namespace PedestrianCrossingToolkit
         {
             if (view == null || Instance != null)
                 return;
+
+            UITextureAtlas iconAtlas = GetOrCreateIconAtlas();
+            if (ExternalUnifiedUiBridge.TryRegisterButton(
+                    ButtonName,
+                    "Pedestrian Crossing Toolkit",
+                    iconAtlas,
+                    IconSpriteName,
+                    IconSpriteName,
+                    IconSpriteName,
+                    IconSpriteName,
+                    OnExternalUnifiedUiToggled))
+            {
+                return;
+            }
 
             UIPanel toolbar = UnifiedTransitLauncherToolbar.GetOrCreate(view);
             if (toolbar == null)
@@ -92,6 +108,7 @@ namespace PedestrianCrossingToolkit
 
         public static void DestroyInstance()
         {
+            ExternalUnifiedUiBridge.ReleaseButton(ButtonName);
             if (Instance == null)
                 return;
 
@@ -102,8 +119,39 @@ namespace PedestrianCrossingToolkit
             UnifiedTransitLauncherToolbar.RefreshLayout(toolbar);
         }
 
+        public static void SetExternalPressed(bool pressed)
+        {
+            ExternalUnifiedUiBridge.SetPressed(ButtonName, pressed);
+        }
+
+        public static void RefreshOperationLock()
+        {
+            bool enabled =
+                !PedestrianCrossingToolkitState.IsAutoScanObservationActive;
+            if (Instance != null)
+                Instance.isEnabled = enabled;
+            ExternalUnifiedUiBridge.SetEnabled(ButtonName, enabled);
+        }
+
+        private static void OnExternalUnifiedUiToggled(bool active)
+        {
+            if (PedestrianCrossingToolkitState.IsAutoScanObservationActive)
+            {
+                ExternalUnifiedUiBridge.SetPressed(ButtonName, false);
+                return;
+            }
+
+            if (active)
+                PedestrianCrossingToolkitPanel.ShowManager();
+            else
+                PedestrianCrossingToolkitPanel.CloseForExternalUiSelection();
+        }
+
         private void OnLauncherClicked(UIComponent component, UIMouseEventParameter p)
         {
+            if (PedestrianCrossingToolkitState.IsAutoScanObservationActive)
+                return;
+
             PedestrianCrossingToolkitPanel.NotifyToolkitUiInput(false);
             if (UnifiedTransitLauncherToolbar.ConsumeDragClick())
                 return;
@@ -130,7 +178,7 @@ namespace PedestrianCrossingToolkit
             _iconSprite.isInteractive = false;
         }
 
-        private static UITextureAtlas GetOrCreateIconAtlas()
+        internal static UITextureAtlas GetOrCreateIconAtlas()
         {
             if (_iconAtlas != null)
                 return _iconAtlas;

@@ -98,8 +98,8 @@ namespace PedestrianCrossingToolkit
         private const float SubwayEntranceAutoLinkRadius = CrossingLandingConnectorPlanner.SubwayEntranceReuseRadius;
         private const float SubwayEntranceAutoLinkMinDistance = 0.5f;
         private const bool EnableNearbySubwayEntranceAutoLinks = true;
-        private static readonly CrossingPathWorkOrder[] WorkOrderBuffer = new CrossingPathWorkOrder[1024];
-        private static readonly CrossingLandingAccessAssetWorkOrder[] SubwayEntranceBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
+        private static CrossingPathWorkOrder[] WorkOrderBuffer = new CrossingPathWorkOrder[1024];
+        private static CrossingLandingAccessAssetWorkOrder[] SubwayEntranceBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
         private static int _workOrderCount;
         private static CrossingPathWorkOrderSummary _lastSummary = CrossingPathWorkOrderSummary.Empty;
 
@@ -172,7 +172,7 @@ namespace PedestrianCrossingToolkit
                 ? AddNearbySubwayEntranceLinks(ref prefabReady, ref missingPrefab, ref subwayPaths)
                 : 0;
             _lastSummary = new CrossingPathWorkOrderSummary(_workOrderCount, prefabReady, missingPrefab, surfacePaths, subwayPaths, bridgePaths, roadEdgeLandingPaths);
-            Debug.Log("[PedestrianCrossingToolkit] Path work order planning: reason="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Path work order planning: reason="
                       + reason
                       + " "
                       + _lastSummary.ToLogString()
@@ -191,9 +191,7 @@ namespace PedestrianCrossingToolkit
 
         private static void AddWorkOrder(CrossingPathWorkOrder order)
         {
-            if (_workOrderCount >= WorkOrderBuffer.Length)
-                return;
-
+            ManagerCapacity.EnsureArrayCapacity(ref WorkOrderBuffer, _workOrderCount + 1);
             WorkOrderBuffer[_workOrderCount++] = order;
         }
 
@@ -226,9 +224,6 @@ namespace PedestrianCrossingToolkit
                     string key = CrossingConnectorKey.Make(first.DeckPosition, second.DeckPosition);
                     if (connectedPairs.Contains(key))
                         continue;
-
-                    if (_workOrderCount >= WorkOrderBuffer.Length)
-                        return added;
 
                     connectedPairs.Add(key);
                     NetInfo prefab = GetPrefab(CrossingPathWorkOrderKind.SubwayPath);
@@ -264,6 +259,7 @@ namespace PedestrianCrossingToolkit
 
         private static int CopyUniqueSubwayEntrances()
         {
+            ManagerCapacity.EnsureArrayCapacity(ref SubwayEntranceBuffer, CrossingLandingConnectorPlanner.AccessAssetCount);
             int sourceCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(SubwayEntranceBuffer);
             int entranceCount = 0;
             int max = Mathf.Min(sourceCount, SubwayEntranceBuffer.Length);
@@ -348,18 +344,18 @@ namespace PedestrianCrossingToolkit
 
         private static void LogWorkOrders(string reason)
         {
-            if (!PedestrianCrossingLog.VerboseDiagnostics)
+            if (!PedestrianCrossingLog.AdvancedDiagnostics)
                 return;
 
             int logCount = Mathf.Min(_workOrderCount, MaxWorkOrderLogsPerRefresh);
             for (int i = 0; i < logCount; i++)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Path work order: reason=" + reason + " index=" + i + " " + WorkOrderBuffer[i].ToLogString());
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Path work order: reason=" + reason + " index=" + i + " " + WorkOrderBuffer[i].ToLogString());
             }
 
             if (_workOrderCount > logCount)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Path work order log truncated: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Path work order log truncated: reason="
                           + reason
                           + " shown=" + logCount
                           + " total=" + _workOrderCount);

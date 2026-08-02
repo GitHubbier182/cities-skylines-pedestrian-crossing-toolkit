@@ -6,12 +6,17 @@ namespace PedestrianCrossingToolkit
     {
         private const int MaxCandidateLogsPerRefresh = 16;
         private const int MaxLinkLogsPerRefresh = 16;
-        private static readonly CrossingConnectivityCandidate[] CandidateBuffer = new CrossingConnectivityCandidate[2048];
-        private static readonly CrossingConnectivityLink[] LinkBuffer = new CrossingConnectivityLink[1024];
-        private static readonly int[] AssetsWithoutLinks = new int[1024];
+        private static CrossingConnectivityCandidate[] CandidateBuffer = new CrossingConnectivityCandidate[2048];
+        private static CrossingConnectivityLink[] LinkBuffer = new CrossingConnectivityLink[1024];
+        private static int[] AssetsWithoutLinks = new int[1024];
         private static int _candidateCount;
         private static int _linkCount;
         private static int _assetWithoutLinkCount;
+
+        public static int LinkCount
+        {
+            get { return _linkCount; }
+        }
 
         public static CrossingConnectivitySummary Refresh(string reason, CrossingPlacementAsset[] assets, int count)
         {
@@ -70,7 +75,7 @@ namespace PedestrianCrossingToolkit
             }
 
             CrossingConnectivitySummary summary = new CrossingConnectivitySummary(count, assetsWithPedestrianLanes, assetsMissingPedestrianLanes, _candidateCount, _linkCount, 0, assetsWithoutLinks, junctionSegmentsScanned);
-            Debug.Log("[PedestrianCrossingToolkit] Connectivity planning: reason=" + reason + " " + summary.ToLogString());
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connectivity planning: reason=" + reason + " " + summary.ToLogString());
             LogCandidates(reason);
             LogLinks(reason);
             CrossingLandingConnectorPlanner.Refresh(reason, LinkBuffer, _linkCount, CandidateBuffer, _candidateCount);
@@ -122,9 +127,10 @@ namespace PedestrianCrossingToolkit
 
         private static void AddAssetWithoutLinks(int assetId)
         {
-            if (assetId <= 0 || _assetWithoutLinkCount >= AssetsWithoutLinks.Length)
+            if (assetId <= 0)
                 return;
 
+            ManagerCapacity.EnsureArrayCapacity(ref AssetsWithoutLinks, _assetWithoutLinkCount + 1);
             AssetsWithoutLinks[_assetWithoutLinkCount++] = assetId;
         }
 
@@ -155,13 +161,14 @@ namespace PedestrianCrossingToolkit
 
         private static bool TryAddGradeSeparatedLink(CrossingPlacementAsset asset)
         {
-            if (_linkCount >= LinkBuffer.Length || !GradeSeparatedPlacementGeometryResolver.IsGradeSeparated(asset.Plan.ApplicationKind))
+            if (!GradeSeparatedPlacementGeometryResolver.IsGradeSeparated(asset.Plan.ApplicationKind))
                 return false;
 
             GradeSeparatedPlacementGeometry geometry;
             if (!GradeSeparatedPlacementGeometryResolver.TryBuild(asset, out geometry))
                 return false;
 
+            ManagerCapacity.EnsureArrayCapacity(ref LinkBuffer, _linkCount + 1);
             LinkBuffer[_linkCount++] = new CrossingConnectivityLink(
                 asset.Id,
                 asset.Placement.SegmentId,
@@ -210,9 +217,7 @@ namespace PedestrianCrossingToolkit
 
         private static void AddCandidate(NetManager netManager, CrossingPlacementAsset asset, ushort segmentId, ushort nodeId, uint laneId, int laneIndex, float lanePosition)
         {
-            if (_candidateCount >= CandidateBuffer.Length)
-                return;
-
+            ManagerCapacity.EnsureArrayCapacity(ref CandidateBuffer, _candidateCount + 1);
             Vector3 worldPosition = GetCandidateWorldPosition(netManager, asset, segmentId, nodeId, lanePosition);
             CandidateBuffer[_candidateCount++] = new CrossingConnectivityCandidate(asset.Id, segmentId, nodeId, laneId, laneIndex, lanePosition, worldPosition);
         }
@@ -322,7 +327,7 @@ namespace PedestrianCrossingToolkit
 
         private static void AddExtremeLaneLink(CrossingPlacementAsset asset, ushort segmentId, int startIndex, int candidateCount, CrossingConnectivityLinkKind kind)
         {
-            if (_linkCount >= LinkBuffer.Length || candidateCount < 2)
+            if (candidateCount < 2)
                 return;
 
             int endIndex = startIndex + candidateCount;
@@ -354,23 +359,24 @@ namespace PedestrianCrossingToolkit
 
             CrossingConnectivityCandidate first = CandidateBuffer[minIndex];
             CrossingConnectivityCandidate second = CandidateBuffer[maxIndex];
+            ManagerCapacity.EnsureArrayCapacity(ref LinkBuffer, _linkCount + 1);
             LinkBuffer[_linkCount++] = new CrossingConnectivityLink(asset.Id, segmentId, kind, first.LaneId, second.LaneId, first.WorldPosition, second.WorldPosition, true, asset.Plan.FlipBridgeAccess);
         }
 
         private static void LogCandidates(string reason)
         {
-            if (!PedestrianCrossingLog.VerboseDiagnostics)
+            if (!PedestrianCrossingLog.AdvancedDiagnostics)
                 return;
 
             int logCount = Mathf.Min(_candidateCount, MaxCandidateLogsPerRefresh);
             for (int i = 0; i < logCount; i++)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Connectivity candidate: reason=" + reason + " index=" + i + " " + CandidateBuffer[i].ToLogString());
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connectivity candidate: reason=" + reason + " index=" + i + " " + CandidateBuffer[i].ToLogString());
             }
 
             if (_candidateCount > logCount)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Connectivity candidate log truncated: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connectivity candidate log truncated: reason="
                           + reason
                           + " shown=" + logCount
                           + " total=" + _candidateCount);
@@ -379,18 +385,18 @@ namespace PedestrianCrossingToolkit
 
         private static void LogLinks(string reason)
         {
-            if (!PedestrianCrossingLog.VerboseDiagnostics)
+            if (!PedestrianCrossingLog.AdvancedDiagnostics)
                 return;
 
             int logCount = Mathf.Min(_linkCount, MaxLinkLogsPerRefresh);
             for (int i = 0; i < logCount; i++)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Connectivity link: reason=" + reason + " index=" + i + " " + LinkBuffer[i].ToLogString());
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connectivity link: reason=" + reason + " index=" + i + " " + LinkBuffer[i].ToLogString());
             }
 
             if (_linkCount > logCount)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Connectivity link log truncated: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connectivity link log truncated: reason="
                           + reason
                           + " shown=" + logCount
                           + " total=" + _linkCount);

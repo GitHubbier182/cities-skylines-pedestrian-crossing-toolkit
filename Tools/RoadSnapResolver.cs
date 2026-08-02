@@ -529,7 +529,7 @@ namespace PedestrianCrossingToolkit
             if (IsGradeSeparatedMode(mode))
                 return AllowsPlacementTargetForMode(mode, segmentId);
 
-            if (mode == PedestrianToolMode.RemoveCrossing)
+            if (mode == PedestrianToolMode.InspectCrossing)
             {
                 return segment.Info.m_netAI is RoadBaseAI
                        || RoadPlacementRules.AllowsGradeSeparatedPlacementTarget(segmentId);

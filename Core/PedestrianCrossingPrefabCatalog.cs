@@ -55,7 +55,7 @@ namespace PedestrianCrossingToolkit
         {
             get
             {
-                return _pedestrianTunnelPrefab
+                return SurfaceCrossingPathPrefab
                        ?? BridgeDeckPrefab
                        ?? _pedestrianPathPrefab;
             }
@@ -138,11 +138,11 @@ namespace PedestrianCrossingToolkit
                             break;
                     }
 
-                    if (!PedestrianCrossingLog.VerboseDiagnostics || logged >= MaxPrefabLogs)
+                    if (!PedestrianCrossingLog.AdvancedDiagnostics || logged >= MaxPrefabLogs)
                         continue;
 
                     logged++;
-                    Debug.Log("[PedestrianCrossingToolkit] Pedestrian prefab candidate: reason="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pedestrian prefab candidate: reason="
                               + reason
                               + " kind=" + kind
                               + " name=" + info.name
@@ -151,7 +151,7 @@ namespace PedestrianCrossingToolkit
                               + " pedestrianLanes=" + pedestrianLaneCount);
                 }
 
-                Debug.Log("[PedestrianCrossingToolkit] Pedestrian prefab catalog: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pedestrian prefab catalog: reason="
                           + reason
                           + " scanned=" + scanned
                           + " candidates=" + pedestrianPrefabs
@@ -382,7 +382,7 @@ namespace PedestrianCrossingToolkit
             SpeedAdjustedTunnelPrefabs.Add(info);
             if (adjusted > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Subway traversal speed preference applied: prefab="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Subway traversal speed preference applied: prefab="
                           + FormatPrefabName(info)
                           + " pedestrianLanes="
                           + adjusted

@@ -19,7 +19,7 @@ namespace PedestrianCrossingToolkit
         private const float RemovalDistanceTolerance = 18f;
         private const float CrossingReplacementFootprintHalfWidth = 10f;
         private const float CrossingReplacementAccessRadius = 6f;
-        private static readonly CrossingLandingAccessAssetWorkOrder[] AccessAssetBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
+        private static CrossingLandingAccessAssetWorkOrder[] AccessAssetBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
         private static int _revision;
 
         public static int Count
@@ -44,7 +44,7 @@ namespace PedestrianCrossingToolkit
                 return;
 
             _autoRebuildBuiltStructures = nextValue;
-            Debug.Log("[PedestrianCrossingToolkit] Built structure auto-rebuild changed: enabled="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Built structure auto-rebuild changed: enabled="
                       + _autoRebuildBuiltStructures
                       + " pending="
                       + Assets.Count);
@@ -57,13 +57,16 @@ namespace PedestrianCrossingToolkit
 
         public static CrossingPlacementAsset AddOrReplace(CrossingPlacementRecord placement, CrossingPlacementPlan plan, SignalRoadStateSnapshot signalRoadState, out CrossingPlacementAsset replaced, out bool didReplace)
         {
-            CrossingPlacementAsset asset = new CrossingPlacementAsset(_nextId++, placement, plan, signalRoadState);
             int removedCount = RemoveMatchingAssets(placement, plan, out replaced);
             didReplace = removedCount > 0;
+            if (!didReplace && Assets.Count >= MaxSerializedAssetCount)
+                throw new InvalidOperationException("PCT cannot register more than " + MaxSerializedAssetCount + " persistent crossings in one city.");
+
+            CrossingPlacementAsset asset = new CrossingPlacementAsset(AllocateAssetId(), placement, plan, signalRoadState);
             Assets.Add(asset);
             _revision++;
 
-            Debug.Log("[PedestrianCrossingToolkit] Pending asset added: id=" + asset.Id
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pending asset added: id=" + asset.Id
                       + " mode=" + placement.Mode
                       + " segment=" + placement.SegmentId
                       + " replaced=" + didReplace
@@ -82,7 +85,7 @@ namespace PedestrianCrossingToolkit
                 return false;
             }
 
-            Debug.Log("[PedestrianCrossingToolkit] Pending assets removed at placement: newestRemoved="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pending assets removed at placement: newestRemoved="
                       + asset.Id
                       + " removed="
                       + removed
@@ -102,7 +105,7 @@ namespace PedestrianCrossingToolkit
                 asset = Assets[i];
                 Assets.RemoveAt(i);
                 _revision++;
-                Debug.Log("[PedestrianCrossingToolkit] Pending asset removed by id: id="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pending asset removed by id: id="
                           + asset.Id
                           + " mode="
                           + asset.Placement.Mode
@@ -173,6 +176,101 @@ namespace PedestrianCrossingToolkit
 
             asset = CrossingPlacementAsset.None;
             return false;
+        }
+
+        internal static bool TryGetAssetNearScreen(
+            Camera camera,
+            Vector2 screenPosition,
+            float pickRadiusPixels,
+            out CrossingPlacementAsset asset)
+        {
+            asset = CrossingPlacementAsset.None;
+            if (camera == null || Assets.Count == 0)
+                return false;
+
+            float bestDistanceSqr = Mathf.Max(1f, pickRadiusPixels * pickRadiusPixels);
+            for (int i = 0; i < Assets.Count; i++)
+            {
+                CrossingPlacementAsset candidate = Assets[i];
+                if (candidate.Id == 0)
+                    continue;
+
+                Vector3 center = candidate.Plan.IsValid
+                    ? candidate.Plan.Center
+                    : candidate.Placement.WorldPosition;
+                float distanceSqr = GetScreenPointDistanceSqr(camera, screenPosition, center);
+                if (candidate.Plan.IsValid)
+                {
+                    distanceSqr = Mathf.Min(
+                        distanceSqr,
+                        GetScreenSegmentDistanceSqr(
+                            camera,
+                            screenPosition,
+                            candidate.Plan.LeftEdge,
+                            candidate.Plan.RightEdge));
+
+                    int exitCount = candidate.Plan.JunctionExitCount;
+                    for (int exitIndex = 0; exitIndex < exitCount; exitIndex++)
+                    {
+                        distanceSqr = Mathf.Min(
+                            distanceSqr,
+                            GetScreenSegmentDistanceSqr(
+                                camera,
+                                screenPosition,
+                                center,
+                                candidate.Plan.JunctionExitPoints[exitIndex]));
+                    }
+                }
+
+                if (distanceSqr >= bestDistanceSqr)
+                    continue;
+
+                bestDistanceSqr = distanceSqr;
+                asset = candidate;
+            }
+
+            return asset.Id != 0;
+        }
+
+        internal static float GetScreenSegmentDistanceSqr(
+            Camera camera,
+            Vector2 screenPosition,
+            Vector3 first,
+            Vector3 second)
+        {
+            if (camera == null)
+                return float.MaxValue;
+
+            Vector3 firstScreen = camera.WorldToScreenPoint(first);
+            Vector3 secondScreen = camera.WorldToScreenPoint(second);
+            if (firstScreen.z <= 0f || secondScreen.z <= 0f)
+                return float.MaxValue;
+
+            Vector2 segment = new Vector2(
+                secondScreen.x - firstScreen.x,
+                secondScreen.y - firstScreen.y);
+            float lengthSqr = segment.sqrMagnitude;
+            if (lengthSqr <= 0.01f)
+                return GetScreenPointDistanceSqr(camera, screenPosition, first);
+
+            Vector2 fromFirst = screenPosition - new Vector2(firstScreen.x, firstScreen.y);
+            float t = Mathf.Clamp01(Vector2.Dot(fromFirst, segment) / lengthSqr);
+            Vector2 closest = new Vector2(firstScreen.x, firstScreen.y) + segment * t;
+            return (screenPosition - closest).sqrMagnitude;
+        }
+
+        private static float GetScreenPointDistanceSqr(
+            Camera camera,
+            Vector2 screenPosition,
+            Vector3 point)
+        {
+            Vector3 screen = camera.WorldToScreenPoint(point);
+            if (screen.z <= 0f)
+                return float.MaxValue;
+
+            float dx = screen.x - screenPosition.x;
+            float dy = screen.y - screenPosition.y;
+            return (dx * dx) + (dy * dy);
         }
 
         internal static bool TryGetAssetAtIndex(int index, out CrossingPlacementAsset asset)
@@ -262,7 +360,7 @@ namespace PedestrianCrossingToolkit
 
         public static bool TryGetAssetAt(CrossingPlacementRecord placement, out CrossingPlacementAsset asset)
         {
-            int index = FindMatchingAssetIndex(placement, placement.Mode == PedestrianToolMode.RemoveCrossing);
+            int index = FindMatchingAssetIndex(placement, placement.Mode == PedestrianToolMode.InspectCrossing);
             if (index >= 0)
             {
                 asset = Assets[index];
@@ -275,7 +373,7 @@ namespace PedestrianCrossingToolkit
 
         public static bool HasAssetAt(CrossingPlacementRecord placement)
         {
-            return FindMatchingAssetIndex(placement, placement.Mode == PedestrianToolMode.RemoveCrossing) >= 0;
+            return FindMatchingAssetIndex(placement, placement.Mode == PedestrianToolMode.InspectCrossing) >= 0;
         }
 
         public static bool HasSameModeAssetAt(CrossingPlacementRecord placement)
@@ -382,11 +480,14 @@ namespace PedestrianCrossingToolkit
 
                 List<CrossingPlacementAsset> restoredAssets = new List<CrossingPlacementAsset>(count);
                 int maxId = 0;
+                HashSet<int> restoredIds = new HashSet<int>();
                 for (int i = 0; i < count; i++)
                 {
                     int id = reader.ReadInt32();
                     if (id <= 0 || id == int.MaxValue)
                         throw new InvalidDataException("Pending crossing asset ID is invalid: " + id);
+                    if (!restoredIds.Add(id))
+                        throw new InvalidDataException("Pending crossing asset ID is duplicated: " + id);
                     PedestrianToolMode mode = (PedestrianToolMode)reader.ReadInt32();
                     ushort segmentId = reader.ReadUInt16();
                     float segmentPosition = reader.ReadSingle();
@@ -462,19 +563,49 @@ namespace PedestrianCrossingToolkit
 
                 Assets.Clear();
                 Assets.AddRange(restoredAssets);
-                _nextId = maxId + 1;
+                _nextId = maxId >= int.MaxValue - 1 ? 1 : maxId + 1;
                 _autoRebuildBuiltStructures = autoRebuildBuiltStructures;
                 _revision++;
                 PruneDuplicateAssets();
                 if (Assets.Count == 0)
                     _autoRebuildBuiltStructures = false;
 
-                Debug.Log("[PedestrianCrossingToolkit] Pending crossing restore flags: version="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pending crossing restore flags: version="
                           + version
                           + " autoRebuildBuiltStructures="
                           + _autoRebuildBuiltStructures);
                 return Assets.Count;
             }
+        }
+
+        private static int AllocateAssetId()
+        {
+            int candidate = _nextId;
+            for (int attempts = 0; attempts <= Assets.Count; attempts++)
+            {
+                if (candidate <= 0 || candidate == int.MaxValue)
+                    candidate = 1;
+
+                bool inUse = false;
+                for (int i = 0; i < Assets.Count; i++)
+                {
+                    if (Assets[i].Id == candidate)
+                    {
+                        inUse = true;
+                        break;
+                    }
+                }
+
+                if (!inUse)
+                {
+                    _nextId = candidate >= int.MaxValue - 1 ? 1 : candidate + 1;
+                    return candidate;
+                }
+
+                candidate = candidate >= int.MaxValue - 1 ? 1 : candidate + 1;
+            }
+
+            throw new InvalidOperationException("No PCT crossing asset IDs are available.");
         }
 
         public static int RebuildPlans()
@@ -499,7 +630,7 @@ namespace PedestrianCrossingToolkit
 
             if (Assets.Count > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Rebuilt pending crossing plans: rebuilt="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Rebuilt pending crossing plans: rebuilt="
                           + rebuilt
                           + " removedInvalid="
                           + removedInvalid
@@ -508,7 +639,7 @@ namespace PedestrianCrossingToolkit
             else if (removedInvalid > 0)
             {
                 _autoRebuildBuiltStructures = false;
-                Debug.Log("[PedestrianCrossingToolkit] Removed invalid pending crossings during plan rebuild: removedInvalid="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Removed invalid pending crossings during plan rebuild: removedInvalid="
                           + removedInvalid);
             }
 
@@ -700,6 +831,7 @@ namespace PedestrianCrossingToolkit
                 }
             }
 
+            ManagerCapacity.EnsureArrayCapacity(ref AccessAssetBuffer, CrossingLandingConnectorPlanner.AccessAssetCount);
             int accessCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(AccessAssetBuffer);
             for (int i = 0; i < accessCount; i++)
             {
@@ -856,7 +988,7 @@ namespace PedestrianCrossingToolkit
                             remove[i] = true;
                             removed++;
                             duplicate = true;
-                            Debug.Log("[PedestrianCrossingToolkit] Pruned restored duplicate: kept="
+                            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pruned restored duplicate: kept="
                                       + newer.Id
                                       + " removed=" + candidate.Id);
                             break;
@@ -887,7 +1019,7 @@ namespace PedestrianCrossingToolkit
 
             if (removed > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Pruned duplicate pending crossings: removed="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pruned duplicate pending crossings: removed="
                           + removed
                           + " count=" + Assets.Count);
             }

@@ -70,11 +70,11 @@ namespace PedestrianCrossingToolkit
                 pathSummary.RoadEdgeLandingPaths,
                 buildReady);
 
-            Debug.Log("[PedestrianCrossingToolkit] Construction planning: reason=" + reason + " " + _lastSummary.ToLogString());
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Construction planning: reason=" + reason + " " + _lastSummary.ToLogString());
 
             if (connectorSummary.Unresolved > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Construction planning note: unresolvedLandings="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Construction planning note: unresolvedLandings="
                           + connectorSummary.Unresolved
                           + " will need standalone landing slabs or compact access assets before path creation.");
             }

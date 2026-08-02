@@ -29,6 +29,7 @@ namespace ScratchyBald.CitiesSkylines.Shared
 
         private static Component _broker;
         private static MethodInfo _registerClientMethod;
+        private static MethodInfo _registerClientWithDiagnosticsMethod;
         private static MethodInfo _queueMethod;
         private static MethodInfo _pumpMethod;
         private static MethodInfo _cancelMethod;
@@ -41,13 +42,38 @@ namespace ScratchyBald.CitiesSkylines.Shared
         /// </summary>
         public static void Initialize(string ownerId)
         {
+            Initialize(ownerId, null);
+        }
+
+        /// <summary>
+        /// Registers a client and contributes its existing advanced-diagnostics
+        /// setting to the process-wide broker. If any registered client enables
+        /// advanced diagnostics, routine broker diagnostics are emitted for all
+        /// clients; the broker owns no separate player setting.
+        /// </summary>
+        public static void Initialize(
+            string ownerId,
+            Func<bool> advancedDiagnosticsEnabled)
+        {
             ValidateIdentifier(ownerId, "ownerId");
             Component broker = ResolveBroker(ownerId);
-            Invoke(
-                broker,
-                _registerClientMethod,
-                new object[] { ownerId },
-                "register client");
+            if (advancedDiagnosticsEnabled != null
+                && _registerClientWithDiagnosticsMethod != null)
+            {
+                Invoke(
+                    broker,
+                    _registerClientWithDiagnosticsMethod,
+                    new object[] { ownerId, advancedDiagnosticsEnabled },
+                    "register client diagnostics");
+            }
+            else
+            {
+                Invoke(
+                    broker,
+                    _registerClientMethod,
+                    new object[] { ownerId },
+                    "register client");
+            }
         }
 
         /// <summary>
@@ -307,6 +333,12 @@ namespace ScratchyBald.CitiesSkylines.Shared
                 type,
                 "RegisterClient",
                 new[] { typeof(string) });
+            MethodInfo registerClientWithDiagnostics = type.GetMethod(
+                "RegisterClient",
+                BindingFlags.Instance | BindingFlags.Public,
+                null,
+                new[] { typeof(string), typeof(Func<bool>) },
+                null);
             MethodInfo queue = GetRequiredMethod(
                 type,
                 "Queue",
@@ -339,6 +371,8 @@ namespace ScratchyBald.CitiesSkylines.Shared
 
             _broker = broker;
             _registerClientMethod = registerClient;
+            _registerClientWithDiagnosticsMethod =
+                registerClientWithDiagnostics;
             _queueMethod = queue;
             _pumpMethod = pump;
             _cancelMethod = cancel;
@@ -426,11 +460,19 @@ namespace ScratchyBald.CitiesSkylines.Shared
             private readonly object _sync = new object();
             private readonly List<Request> _queued = new List<Request>();
             private readonly HashSet<string> _clients = new HashSet<string>();
+            private readonly Dictionary<string, Func<bool>>
+                _advancedDiagnosticsProviders =
+                    new Dictionary<string, Func<bool>>();
+            private volatile Func<bool>[] _advancedDiagnosticsSnapshot =
+                new Func<bool>[0];
 
             private Request _active;
             private string _ownerId;
             private long _nextSequence;
             private bool _pumpRunning;
+            private bool _hasPumpedSimulationUnityFrame;
+            private int _lastPumpedSimulationUnityFrame;
+            private volatile bool _advancedDiagnosticsEnabled;
 
             public string Protocol
             {
@@ -448,11 +490,37 @@ namespace ScratchyBald.CitiesSkylines.Shared
 
             public void RegisterClient(string ownerId)
             {
+                RegisterClient(ownerId, null);
+            }
+
+            public void RegisterClient(
+                string ownerId,
+                Func<bool> advancedDiagnosticsEnabled)
+            {
                 lock (_sync)
                 {
                     if (string.IsNullOrEmpty(_ownerId))
                         _ownerId = ownerId;
                     _clients.Add(ownerId);
+                    if (advancedDiagnosticsEnabled != null)
+                    {
+                        _advancedDiagnosticsProviders[ownerId] =
+                            advancedDiagnosticsEnabled;
+                        RebuildAdvancedDiagnosticsSnapshotLocked();
+                    }
+                }
+
+                if (advancedDiagnosticsEnabled == null)
+                    return;
+
+                try
+                {
+                    if (advancedDiagnosticsEnabled())
+                        _advancedDiagnosticsEnabled = true;
+                }
+                catch
+                {
+                    // A client setting must never prevent scheduler use.
                 }
             }
 
@@ -501,14 +569,17 @@ namespace ScratchyBald.CitiesSkylines.Shared
                     _queued.Add(request);
                 }
 
-                UnityEngine.Debug.Log(
-                    "[Scratchy's Scan Manager] Queued "
-                    + request.Ticket
-                    + " priority="
-                    + request.Priority
-                    + " context="
-                    + GetContextName(request.Context)
-                    + ".");
+                if (_advancedDiagnosticsEnabled)
+                {
+                    UnityEngine.Debug.Log(
+                        "[Scratchy's Scan Manager] Queued "
+                        + request.Ticket
+                        + " priority="
+                        + request.Priority
+                        + " context="
+                        + GetContextName(request.Context)
+                        + ".");
+                }
                 return request.Ticket;
             }
 
@@ -524,6 +595,18 @@ namespace ScratchyBald.CitiesSkylines.Shared
                 {
                     if (_pumpRunning)
                         return;
+                    if (context == ScratchysScanManager.SimulationThreadContext)
+                    {
+                        int unityFrame = Time.frameCount;
+                        if (_hasPumpedSimulationUnityFrame
+                            && unityFrame == _lastPumpedSimulationUnityFrame)
+                        {
+                            return;
+                        }
+
+                        _hasPumpedSimulationUnityFrame = true;
+                        _lastPumpedSimulationUnityFrame = unityFrame;
+                    }
                     _pumpRunning = true;
                 }
 
@@ -600,9 +683,11 @@ namespace ScratchyBald.CitiesSkylines.Shared
                     }
 
                     _clients.Remove(ownerId);
+                    if (_advancedDiagnosticsProviders.Remove(ownerId))
+                        RebuildAdvancedDiagnosticsSnapshotLocked();
                 }
 
-                if (cancelled > 0)
+                if (cancelled > 0 && _advancedDiagnosticsEnabled)
                 {
                     UnityEngine.Debug.Log(
                         "[Scratchy's Scan Manager] Cancelled owner="
@@ -634,7 +719,39 @@ namespace ScratchyBald.CitiesSkylines.Shared
 
             private void Update()
             {
+                RefreshAdvancedDiagnostics();
                 Pump(ScratchysScanManager.MainThreadContext);
+            }
+
+            private void RefreshAdvancedDiagnostics()
+            {
+                Func<bool>[] providers = _advancedDiagnosticsSnapshot;
+                bool enabled = false;
+                for (int i = 0; i < providers.Length; i++)
+                {
+                    try
+                    {
+                        if (providers[i]())
+                        {
+                            enabled = true;
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                        // Logging preferences never affect scheduled work.
+                    }
+                }
+
+                _advancedDiagnosticsEnabled = enabled;
+            }
+
+            private void RebuildAdvancedDiagnosticsSnapshotLocked()
+            {
+                Func<bool>[] providers =
+                    new Func<bool>[_advancedDiagnosticsProviders.Count];
+                _advancedDiagnosticsProviders.Values.CopyTo(providers, 0);
+                _advancedDiagnosticsSnapshot = providers;
             }
 
             private void PumpCore(int context)
@@ -664,7 +781,7 @@ namespace ScratchyBald.CitiesSkylines.Shared
                             return;
                     }
 
-                    if (started)
+                    if (started && _advancedDiagnosticsEnabled)
                     {
                         UnityEngine.Debug.Log(
                             "[Scratchy's Scan Manager] Started "
@@ -689,7 +806,8 @@ namespace ScratchyBald.CitiesSkylines.Shared
 
                     double stepMilliseconds =
                         ElapsedMilliseconds(stepStarted);
-                    if (stepMilliseconds >= SlowStepWarningMilliseconds)
+                    if (_advancedDiagnosticsEnabled
+                        && stepMilliseconds >= SlowStepWarningMilliseconds)
                     {
                         UnityEngine.Debug.LogWarning(
                             "[Scratchy's Scan Manager] Slow atomic step: ticket="
@@ -730,15 +848,18 @@ namespace ScratchyBald.CitiesSkylines.Shared
                     if (!completed)
                         continue;
 
-                    UnityEngine.Debug.Log(
-                        "[Scratchy's Scan Manager] Completed "
-                        + request.Ticket
-                        + " steps="
-                        + request.Steps
-                        + " elapsedMs="
-                        + ElapsedMilliseconds(request.StartedTimestamp)
-                            .ToString("0.0")
-                        + ".");
+                    if (_advancedDiagnosticsEnabled)
+                    {
+                        UnityEngine.Debug.Log(
+                            "[Scratchy's Scan Manager] Completed "
+                            + request.Ticket
+                            + " steps="
+                            + request.Steps
+                            + " elapsedMs="
+                            + ElapsedMilliseconds(request.StartedTimestamp)
+                                .ToString("0.0")
+                            + ".");
+                    }
                     if (completion != null)
                     {
                         try

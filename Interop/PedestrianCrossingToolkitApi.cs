@@ -158,6 +158,7 @@ namespace PedestrianCrossingToolkit
                 return false;
             }
 
+            int allocatedTransactionId = AllocateRoadReplacementTransactionId();
             var detached = new List<CrossingPlacementAsset>(affected.Count);
             CrossingPathBuilder.BeginNetworkOnlyBuild();
             try
@@ -195,7 +196,7 @@ namespace PedestrianCrossingToolkit
                 detached.Count,
                 "api-road-replacement-begin");
 
-            transactionId = AllocateRoadReplacementTransactionId();
+            transactionId = allocatedTransactionId;
             crossingCount = detached.Count;
             RoadReplacementTransaction transaction =
                 new RoadReplacementTransaction(transactionId, detached.ToArray());
@@ -204,7 +205,7 @@ namespace PedestrianCrossingToolkit
             message = "PCT detached " + crossingCount + " crossing" +
                       (crossingCount == 1 ? string.Empty : "s") +
                       " for road replacement.";
-            Debug.Log("[PedestrianCrossingToolkit] API road replacement began: transaction="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] API road replacement began: transaction="
                       + transactionId
                       + " segments="
                       + segmentIds.Length
@@ -318,7 +319,7 @@ namespace PedestrianCrossingToolkit
             transaction.Message = message;
             transaction.Phase = RoadReplacementRebuildingVisuals;
             QueueVisualRebuild(transaction, restoredAssetIds, restoredCount);
-            Debug.Log("[PedestrianCrossingToolkit] API road replacement network restore accepted: transaction="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] API road replacement network restore accepted: transaction="
                       + transactionId
                       + " restored="
                       + restoredCount
@@ -476,7 +477,7 @@ namespace PedestrianCrossingToolkit
                     PedestrianCrossingToolkitPanel.RefreshInstance();
                     transaction.Message = "PCT removed the affected crossing visuals.";
                     transaction.Phase = RoadReplacementReadyForNetworkReplacement;
-                    Debug.Log("[PedestrianCrossingToolkit] API road replacement visual detach completed: transaction="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] API road replacement visual detach completed: transaction="
                               + transaction.Id
                               + " assets="
                               + transaction.AssetIds.Length);
@@ -514,7 +515,7 @@ namespace PedestrianCrossingToolkit
                     transaction.Phase = transaction.FailedCount == 0
                         ? RoadReplacementCompleted
                         : RoadReplacementFailed;
-                    Debug.Log("[PedestrianCrossingToolkit] API road replacement completed: transaction="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] API road replacement completed: transaction="
                               + transaction.Id
                               + " restored="
                               + transaction.RestoredCount
@@ -564,16 +565,22 @@ namespace PedestrianCrossingToolkit
 
         private static int AllocateRoadReplacementTransactionId()
         {
-            int start = _nextRoadReplacementTransactionId;
-            while (_nextRoadReplacementTransactionId <= 0 ||
-                   RoadReplacementTransactions.ContainsKey(_nextRoadReplacementTransactionId))
+            int candidate = _nextRoadReplacementTransactionId;
+            for (int attempts = 0; attempts <= RoadReplacementTransactions.Count; attempts++)
             {
-                _nextRoadReplacementTransactionId++;
-                if (_nextRoadReplacementTransactionId == start)
-                    throw new InvalidOperationException("No PCT road-replacement transaction IDs are available.");
+                if (candidate <= 0 || candidate == int.MaxValue)
+                    candidate = 1;
+
+                if (!RoadReplacementTransactions.ContainsKey(candidate))
+                {
+                    _nextRoadReplacementTransactionId = candidate >= int.MaxValue - 1 ? 1 : candidate + 1;
+                    return candidate;
+                }
+
+                candidate = candidate >= int.MaxValue - 1 ? 1 : candidate + 1;
             }
 
-            return _nextRoadReplacementTransactionId++;
+            throw new InvalidOperationException("No PCT road-replacement transaction IDs are available.");
         }
     }
 }

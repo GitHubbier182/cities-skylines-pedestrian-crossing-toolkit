@@ -10,9 +10,11 @@ namespace PedestrianCrossingToolkit
 
         private const string AutoScanRequestId = "auto-scan-observation";
         private const string LoadRebuildRequestId = "saved-crossing-rehydration";
+        private const string ValidationRequestId = "scheduled-crossing-validation";
 
         private static string _autoScanTicket;
         private static string _loadRebuildTicket;
+        private static string _validationTicket;
         private static bool _available;
         private static bool _failureLogged;
 
@@ -22,12 +24,18 @@ namespace PedestrianCrossingToolkit
             _failureLogged = false;
             try
             {
-                ScratchysScanManager.Initialize(OwnerId);
+                ScratchysScanManager.Initialize(
+                    OwnerId,
+                    delegate
+                    {
+                        return PedestrianCrossingLog.AdvancedDiagnostics;
+                    });
                 _available = true;
-                Debug.Log(
-                    "[PedestrianCrossingToolkit] Scratchy's Scan Manager"
-                    + " registered; Auto Scan observation and saved-crossing"
-                    + " rehydration will use cooperative main-thread requests.");
+                PedestrianCrossingLog.UnityInfo(
+                    "Scratchy's Scan Manager"
+                    + " registered; Auto Scan observation, saved-crossing"
+                    + " rehydration and scheduled read-only validation will"
+                    + " use cooperative main-thread requests.");
             }
             catch (Exception exception)
             {
@@ -114,6 +122,44 @@ namespace PedestrianCrossingToolkit
             }
         }
 
+        public static bool TryQueueScheduledValidation(
+            Func<bool> step,
+            Action completed,
+            Action<Exception> failed)
+        {
+            if (!_available || step == null)
+                return false;
+
+            Cancel(ref _validationTicket, "scheduled crossing validation");
+            try
+            {
+                _validationTicket = ScratchysScanManager.QueueMainThreadScan(
+                    OwnerId,
+                    ValidationRequestId,
+                    ScratchysScanManager.BackgroundPriority,
+                    step,
+                    delegate
+                    {
+                        _validationTicket = null;
+                        if (completed != null)
+                            completed();
+                    },
+                    delegate(Exception exception)
+                    {
+                        _validationTicket = null;
+                        if (failed != null)
+                            failed(exception);
+                    });
+                return !string.IsNullOrEmpty(_validationTicket);
+            }
+            catch (Exception exception)
+            {
+                _available = false;
+                LogFallback("scheduled validation request submission failed", exception);
+                return false;
+            }
+        }
+
         public static void Shutdown()
         {
             if (_available)
@@ -130,6 +176,7 @@ namespace PedestrianCrossingToolkit
 
             _autoScanTicket = null;
             _loadRebuildTicket = null;
+            _validationTicket = null;
             _available = false;
         }
 

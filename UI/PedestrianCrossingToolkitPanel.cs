@@ -12,7 +12,7 @@ namespace PedestrianCrossingToolkit
         private const float UiShieldPadding = 8f;
         private const float TopHudBlockHeight = 96f;
         private const float BottomHudBlockHeight = 128f;
-        private const float ExpandedPanelHeight = 276f;
+        private const float ExpandedPanelHeight = 204f;
         private const float MonitoringPanelHeight = 32f;
         private const string NormalPanelTitle = "Pedestrian Crossing Toolkit";
         private const string MonitoringPanelTitle = "Monitoring your city";
@@ -23,21 +23,12 @@ namespace PedestrianCrossingToolkit
         private UIPanel _titleBar;
         private UILabel _titleLabel;
         private UILabel _statusLabel;
-        private UIButton _midBlockButton;
-        private UIButton _signalButton;
-        private UIButton _subwayButton;
-        private UIButton _subwayPointButton;
-        private UIButton _bridgeButton;
-        private UIButton _removeButton;
-        private UIButton _clearButton;
-        private UIButton _validateButton;
         private UIButton _autoScanButton;
         private UICheckBox _autoScanPreviewCheckbox;
         private UIPanel _autoScanPreviewCheckboxRow;
         private UIButton _rejectPreviewButton;
         private UIButton _applyPreviewButton;
         private UIButton _cancelPreviewButton;
-        private UIButton _infoButton;
         private UIButton _closeButton;
         private bool _monitoringLayout;
         private bool _panelDragging;
@@ -47,6 +38,11 @@ namespace PedestrianCrossingToolkit
         public static bool IsOpen
         {
             get { return Instance != null && Instance.isVisible; }
+        }
+
+        public static bool IsWorkspaceOpen
+        {
+            get { return IsOpen || PedestrianCrossingRoadsTab.IsOpen; }
         }
 
         public static bool TryGetPanelScreenRect(out Rect rect)
@@ -98,7 +94,7 @@ namespace PedestrianCrossingToolkit
             _titleLabel.textScale = 0.9f;
             _titleLabel.autoSize = false;
             _titleLabel.autoHeight = false;
-            _titleLabel.width = 408f;
+            _titleLabel.width = 466f;
             _titleLabel.height = 22f;
             _titleLabel.relativePosition = new Vector3(12f, 8f);
             _titleLabel.isInteractive = true;
@@ -111,29 +107,10 @@ namespace PedestrianCrossingToolkit
             _titleLabel.eventMouseMove += OnPanelDragMouseMove;
             _titleLabel.eventMouseUp += OnPanelDragMouseUp;
 
-            _infoButton = AddButton(_titleBar, "Info", 432f, 5f, 48f, 22f, OnInfoClicked);
-            _infoButton.textScale = 0.58f;
-            _infoButton.tooltip = "Copy debug info for support.";
-
             _closeButton = AddButton(_titleBar, "x", 486f, 5f, 24f, 22f, OnCloseClicked);
             _closeButton.tooltip = "Close";
 
-            _midBlockButton = AddButton(this, "Standard\nCrossing", margin, 48f, 92f, 42f, (c, p) => ActivateMode(PedestrianToolMode.MidBlockCrossing));
-            _midBlockButton.tooltip = "Place a simple crossing.";
-
-            _signalButton = AddButton(this, "Signalled\nCrossing", 116f, 48f, 104f, 42f, (c, p) => ActivateMode(PedestrianToolMode.SignalCrossing));
-            _signalButton.tooltip = "Place a signal-controlled crossing.";
-
-            _subwayButton = AddButton(this, "Auto\nSubway", 228f, 48f, 84f, 42f, (c, p) => ActivateMode(PedestrianToolMode.SubwayLink));
-            _subwayButton.tooltip = "Place a compact subway link.";
-
-            _subwayPointButton = AddButton(this, "Manual\nSubway", 320f, 48f, 96f, 42f, (c, p) => ActivateMode(PedestrianToolMode.SubwayPointToPoint));
-            _subwayPointButton.tooltip = "Place a subway between two selected entrances.";
-
-            _bridgeButton = AddButton(this, "Bridge", 424f, 48f, 80f, 42f, (c, p) => ActivateMode(PedestrianToolMode.PedestrianBridge));
-            _bridgeButton.tooltip = "Place a pedestrian bridge.";
-
-            _statusLabel = AddLabel(this, margin, 100f, contentWidth, 42f);
+            _statusLabel = AddLabel(this, margin, 42f, contentWidth, 32f);
 
             _autoScanPreviewCheckboxRow = AddCheckBox(
                 this,
@@ -142,30 +119,21 @@ namespace PedestrianCrossingToolkit
                 PedestrianCrossingToolkitState.AutoScanPreviewConfirmEnabled,
                 value => PedestrianCrossingToolkitState.SetAutoScanPreviewConfirmEnabled(value),
                 out _autoScanPreviewCheckbox);
-            _autoScanPreviewCheckboxRow.relativePosition = new Vector3(margin, 146f);
+            _autoScanPreviewCheckboxRow.relativePosition = new Vector3(margin, 76f);
 
-            _removeButton = AddButton(this, "Remove A\nCrossing", margin, 178f, 116f, 42f, (c, p) => ActivateMode(PedestrianToolMode.RemoveCrossing));
-            _removeButton.tooltip = "Remove a crossing by clicking its location.";
-
-            _validateButton = AddButton(this, "Validate\nCrossings", 140f, 178f, 116f, 42f, OnValidateClicked);
-            _validateButton.tooltip = "Run a one-time health check for placed toolkit crossings.";
-
-            _clearButton = AddButton(this, "Clear All\nCrossings", 264f, 178f, 116f, 42f, OnClearClicked);
-            _clearButton.tooltip = "Remove all crossings from this city.";
-
-            _autoScanButton = AddButton(this, "Auto\nScan", 388f, 178f, 116f, 42f, OnAutoScanClicked);
+            _autoScanButton = AddButton(this, "Auto\nScan", 202f, 108f, 116f, 42f, OnAutoScanClicked);
             _autoScanButton.tooltip =
                 "Auto Scan monitors your city for one full minute.\n"
                 + "PCT minimises as 'Monitoring your city', then reopens with results or preview instructions.\n"
                 + "Results depend on time of day and city conditions; you might need to do multiple scans.";
 
-            _rejectPreviewButton = AddButton(this, "Reject\nProposal", margin, 226f, 116f, 34f, OnRejectPreviewClicked);
+            _rejectPreviewButton = AddButton(this, "Reject\nProposal", margin, 156f, 116f, 34f, OnRejectPreviewClicked);
             _rejectPreviewButton.tooltip = "Click a preview marker to reject that suggested crossing.";
 
-            _applyPreviewButton = AddButton(this, "Apply\nPreview", 140f, 226f, 116f, 34f, OnApplyPreviewClicked);
+            _applyPreviewButton = AddButton(this, "Apply\nPreview", 140f, 156f, 116f, 34f, OnApplyPreviewClicked);
             _applyPreviewButton.tooltip = "Create all remaining Auto Scan preview suggestions.";
 
-            _cancelPreviewButton = AddButton(this, "Cancel\nPreview", 264f, 226f, 116f, 34f, OnCancelPreviewClicked);
+            _cancelPreviewButton = AddButton(this, "Cancel\nPreview", 264f, 156f, 116f, 34f, OnCancelPreviewClicked);
             _cancelPreviewButton.tooltip = "Discard the staged Auto Scan suggestions.";
 
             Refresh();
@@ -192,11 +160,11 @@ namespace PedestrianCrossingToolkit
                 && PedestrianCrossingToolkitState.ActiveMode == PedestrianToolMode.None
                 && _ignoreRightClickCloseFrame != Time.frameCount)
             {
-                PedestrianCrossingToolkitState.ClearValidationProblemMarkersForToolkitClose();
+                PedestrianCrossingToolkitState.ClearAutoScanPreviewForToolkitClose();
                 PedestrianCrossingAutoScanInstructionsPanel.HideInstance();
                 Hide();
                 _uiPointerCaptured = false;
-                Debug.Log("[PedestrianCrossingToolkit] Toolkit closed: right-click with no active crossing tool.");
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Toolkit closed: right-click with no active crossing tool.");
                 return;
             }
 
@@ -207,7 +175,7 @@ namespace PedestrianCrossingToolkit
                 return;
 
             CloseForExternalUiSelection();
-            Debug.Log("[PedestrianCrossingToolkit] Toolkit closed: external UI selected while panel was open.");
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Toolkit closed: external UI selected while panel was open.");
         }
 
         public static void CreateIfNeeded(UIView view)
@@ -239,10 +207,18 @@ namespace PedestrianCrossingToolkit
                 return;
             }
 
+            if (PedestrianCrossingToolkitState.HasAutoScanPreviewPlan)
+            {
+                ShowOptionsMessage(
+                    "Clear All Crossings",
+                    "Apply or cancel the pending PCT Auto Scan preview before clearing crossings.");
+                return;
+            }
+
             if (Instance.isVisible)
             {
                 Instance.CancelActiveTool();
-                PedestrianCrossingToolkitState.ClearValidationProblemMarkersForToolkitClose();
+                PedestrianCrossingToolkitState.ClearAutoScanPreviewForToolkitClose();
                 PedestrianCrossingAutoScanInstructionsPanel.HideInstance();
                 Instance.Hide();
             }
@@ -252,10 +228,131 @@ namespace PedestrianCrossingToolkit
             }
         }
 
+        public static void ShowManager()
+        {
+            if (Instance == null)
+                return;
+
+            if (PedestrianCrossingToolkitState.IsAutoScanObservationActive)
+            {
+                Instance.BeginAutoScanMonitoring();
+                return;
+            }
+
+            Instance.Show();
+            Instance.BringToFront();
+            Instance.Refresh();
+        }
+
         public static void RefreshInstance()
         {
             if (Instance != null)
                 Instance.Refresh();
+        }
+
+        public static void ShowScheduledValidationWarning(int crossingCount)
+        {
+            if (crossingCount <= 0)
+                return;
+
+            string plural = crossingCount == 1 ? string.Empty : "s";
+            string message = "PCT's scheduled read-only scan found "
+                             + crossingCount
+                             + " crossing"
+                             + plural
+                             + " that needs player attention.\n\n"
+                             + "Open Roads > Crossing to find the warning billboards. They remain until you close the Crossing tab or remove and rebuild the affected crossing.";
+            try
+            {
+                ExceptionPanel panel = UIView.library != null
+                    ? UIView.library.ShowModal<ExceptionPanel>("ExceptionPanel")
+                    : null;
+                if (panel != null)
+                    panel.SetMessage("PCT Crossing Problem Detected", message, false);
+                else
+                    ConfirmPanel.ShowModal("PCT Crossing Problem Detected", message, null);
+            }
+            catch (Exception exception)
+            {
+                PedestrianCrossingLog.Warning(
+                    "Could not display scheduled crossing validation warning: "
+                    + exception.Message);
+            }
+        }
+
+        public static void ShowAutoScanCompletionSummary(string message)
+        {
+            if (string.IsNullOrEmpty(message))
+                return;
+
+            try
+            {
+                ExceptionPanel panel = UIView.library != null
+                    ? UIView.library.ShowModal<ExceptionPanel>("ExceptionPanel")
+                    : null;
+                if (panel != null)
+                    panel.SetMessage("PCT Auto Scan Complete", message, false);
+                else
+                    ConfirmPanel.ShowModal("PCT Auto Scan Complete", message, null);
+            }
+            catch (Exception exception)
+            {
+                PedestrianCrossingLog.Warning(
+                    "Could not display Auto Scan completion summary: "
+                    + exception.Message);
+            }
+        }
+
+        public static void RequestClearAllCrossingsFromOptions()
+        {
+            if (!PedestrianCrossingToolkitState.Enabled)
+            {
+                ShowOptionsMessage(
+                    "Clear All Crossings",
+                    "Load a city before clearing PCT crossings.");
+                return;
+            }
+
+            if (PedestrianCrossingToolkitState.IsAutoScanObservationActive)
+            {
+                ShowOptionsMessage(
+                    "Clear All Crossings",
+                    "Wait for the active PCT Auto Scan to finish before clearing crossings.");
+                return;
+            }
+
+            if (CrossingPlacementRegistry.Count <= 0)
+            {
+                ShowOptionsMessage(
+                    "Clear All Crossings",
+                    "This city has no PCT crossings to clear.");
+                return;
+            }
+
+            ConfirmPanel.ShowModal(
+                "Clear All Crossings",
+                "This removes all PCT crossings from the loaded city. Are you sure?",
+                OnClearAllConfirmed);
+        }
+
+        private static void ShowOptionsMessage(string title, string message)
+        {
+            try
+            {
+                ExceptionPanel panel = UIView.library != null
+                    ? UIView.library.ShowModal<ExceptionPanel>("ExceptionPanel")
+                    : null;
+                if (panel != null)
+                    panel.SetMessage(title, message, false);
+                else
+                    ConfirmPanel.ShowModal(title, message, null);
+            }
+            catch (Exception exception)
+            {
+                PedestrianCrossingLog.Warning(
+                    "Could not display PCT Options message: "
+                    + exception.Message);
+            }
         }
 
         public static void BeginAutoScanMonitoringInstance()
@@ -309,10 +406,11 @@ namespace PedestrianCrossingToolkit
                 return;
 
             Instance.CancelActiveTool();
-            PedestrianCrossingToolkitState.ClearValidationProblemMarkersForToolkitClose();
+            PedestrianCrossingToolkitState.ClearAutoScanPreviewForToolkitClose();
             PedestrianCrossingAutoScanInstructionsPanel.HideInstance();
             Instance.Hide();
             _uiPointerCaptured = false;
+            PedestrianCrossingToolkitLauncherButton.SetExternalPressed(false);
         }
 
         private static bool IsMouseOverToolkitUi(bool includeExternalUi)
@@ -367,18 +465,20 @@ namespace PedestrianCrossingToolkit
             _ignoreRightClickCloseFrame = Time.frameCount;
         }
 
-        private void ActivateMode(PedestrianToolMode mode)
+        internal static void ActivateModeFromUi(PedestrianToolMode mode)
         {
             if (PedestrianCrossingToolkitState.IsAutoScanObservationActive)
             {
-                Refresh();
+                RefreshInstance();
+                PedestrianCrossingRoadsTab.RefreshInstance();
                 return;
             }
 
             if (PedestrianCrossingToolkitState.HasAutoScanPreviewPlan
                 && mode != PedestrianToolMode.AutoScanReject)
             {
-                Refresh();
+                RefreshInstance();
+                PedestrianCrossingRoadsTab.RefreshInstance();
                 return;
             }
 
@@ -387,33 +487,38 @@ namespace PedestrianCrossingToolkit
             if (tool != null && ToolsModifierControl.toolController != null)
             {
                 ToolsModifierControl.toolController.CurrentTool = tool;
-                Debug.Log("[PedestrianCrossingToolkit] Interaction tool activated for mode: " + mode);
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Interaction tool activated for mode: " + mode);
             }
 
-            Refresh();
+            RefreshInstance();
+            PedestrianCrossingRoadsTab.RefreshInstance();
+        }
+
+        private void ActivateMode(PedestrianToolMode mode)
+        {
+            ActivateModeFromUi(mode);
         }
 
         private void OnCloseClicked(UIComponent component, UIMouseEventParameter p)
         {
+            if (PedestrianCrossingToolkitState.IsAutoScanObservationActive)
+                return;
+
             CancelActiveTool();
-            PedestrianCrossingToolkitState.ClearValidationProblemMarkersForToolkitClose();
+            PedestrianCrossingToolkitState.ClearAutoScanPreviewForToolkitClose();
             PedestrianCrossingAutoScanInstructionsPanel.HideInstance();
             Hide();
-        }
-
-        private void OnClearClicked(UIComponent component, UIMouseEventParameter p)
-        {
-            ConfirmPanel.ShowModal(
-                "Clear All Crossings",
-                "This removes all crossings in your city. Are you sure?",
-                OnClearAllConfirmed);
+            PedestrianCrossingToolkitLauncherButton.SetExternalPressed(false);
         }
 
         private void OnAutoScanClicked(UIComponent component, UIMouseEventParameter p)
         {
+            if (PedestrianCrossingToolkitState.IsAutoScanObservationActive)
+                return;
+
             CancelActiveTool();
             if (PedestrianCrossingToolkitState.BeginAutoScanObservation())
-                Debug.Log("[PedestrianCrossingToolkit] Auto scan button started observation.");
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Auto scan button started observation.");
         }
 
         private void BeginAutoScanMonitoring()
@@ -423,7 +528,6 @@ namespace PedestrianCrossingToolkit
             _titleLabel.text = MonitoringPanelTitle;
             _titleLabel.width = width - 24f;
             SetExpandedContentVisible(false);
-            _infoButton.isVisible = false;
             _closeButton.isVisible = false;
             Show();
             BringToFront();
@@ -434,9 +538,8 @@ namespace PedestrianCrossingToolkit
             _monitoringLayout = false;
             height = ExpandedPanelHeight;
             _titleLabel.text = NormalPanelTitle;
-            _titleLabel.width = 408f;
+            _titleLabel.width = 466f;
             SetExpandedContentVisible(true);
-            _infoButton.isVisible = true;
             _closeButton.isVisible = true;
             Refresh();
             if (showPanel)
@@ -453,14 +556,6 @@ namespace PedestrianCrossingToolkit
         private void SetExpandedContentVisible(bool visible)
         {
             _statusLabel.isVisible = visible;
-            _midBlockButton.isVisible = visible;
-            _signalButton.isVisible = visible;
-            _subwayButton.isVisible = visible;
-            _subwayPointButton.isVisible = visible;
-            _bridgeButton.isVisible = visible;
-            _removeButton.isVisible = visible;
-            _clearButton.isVisible = visible;
-            _validateButton.isVisible = visible;
             _autoScanButton.isVisible = visible;
             _autoScanPreviewCheckboxRow.isVisible = visible;
             _rejectPreviewButton.isVisible = visible && PedestrianCrossingToolkitState.HasAutoScanPreviewPlan;
@@ -470,6 +565,9 @@ namespace PedestrianCrossingToolkit
 
         private void OnRejectPreviewClicked(UIComponent component, UIMouseEventParameter p)
         {
+            if (PedestrianCrossingToolkitState.IsAutoScanObservationActive)
+                return;
+
             if (!PedestrianCrossingToolkitState.HasAutoScanPreviewPlan)
             {
                 Refresh();
@@ -481,34 +579,27 @@ namespace PedestrianCrossingToolkit
 
         private void OnApplyPreviewClicked(UIComponent component, UIMouseEventParameter p)
         {
+            if (PedestrianCrossingToolkitState.IsAutoScanObservationActive)
+                return;
+
             CancelActiveTool();
             PedestrianCrossingToolkitState.ApplyAutoScanPreview();
         }
 
         private void OnCancelPreviewClicked(UIComponent component, UIMouseEventParameter p)
         {
+            if (PedestrianCrossingToolkitState.IsAutoScanObservationActive)
+                return;
+
             CancelActiveTool();
             PedestrianCrossingToolkitState.CancelAutoScanPreview();
         }
 
-        private void OnValidateClicked(UIComponent component, UIMouseEventParameter p)
+        private static void OnClearAllConfirmed(UIComponent component, int result)
         {
-            CancelActiveTool();
-            PedestrianCrossingToolkitState.ValidateCrossings();
-        }
-
-        private void OnInfoClicked(UIComponent component, UIMouseEventParameter p)
-        {
-            CancelActiveTool();
-            string report = PedestrianCrossingToolkitState.BuildUserInfoReport();
-            bool copied = TryCopyToClipboard(report);
-            PedestrianCrossingLog.Info("User info report requested:\n" + report);
-            PedestrianCrossingToolkitState.ShowUserInfoStatus(copied);
-        }
-
-        private void OnClearAllConfirmed(UIComponent component, int result)
-        {
-            if (result != 1)
+            if (result != 1
+                || PedestrianCrossingToolkitState.IsAutoScanObservationActive
+                || PedestrianCrossingToolkitState.HasAutoScanPreviewPlan)
                 return;
 
             PedestrianCrossingToolkitState.ClearPlacements();
@@ -572,27 +663,12 @@ namespace PedestrianCrossingToolkit
         private void Refresh()
         {
             PedestrianToolMode mode = PedestrianCrossingToolkitState.ActiveMode;
-            SetButtonState(_midBlockButton, mode == PedestrianToolMode.MidBlockCrossing);
-            SetButtonState(_signalButton, mode == PedestrianToolMode.SignalCrossing);
-            SetButtonState(_subwayButton, mode == PedestrianToolMode.SubwayLink);
-            SetButtonState(_subwayPointButton, mode == PedestrianToolMode.SubwayPointToPoint);
-            SetButtonState(_bridgeButton, mode == PedestrianToolMode.PedestrianBridge);
-            SetButtonState(_removeButton, mode == PedestrianToolMode.RemoveCrossing);
             SetButtonState(_rejectPreviewButton, mode == PedestrianToolMode.AutoScanReject);
 
             _statusLabel.text = GetSelectedModeStatusText(mode);
-            bool hasPendingAssets = CrossingPlacementRegistry.Count > 0;
             bool scanning = PedestrianCrossingToolkitState.IsAutoScanObservationActive;
             bool previewPending = PedestrianCrossingToolkitState.HasAutoScanPreviewPlan;
             bool actionEnabled = !scanning && !previewPending;
-            _midBlockButton.isEnabled = actionEnabled;
-            _signalButton.isEnabled = actionEnabled;
-            _subwayButton.isEnabled = actionEnabled;
-            _subwayPointButton.isEnabled = actionEnabled;
-            _bridgeButton.isEnabled = actionEnabled;
-            _removeButton.isEnabled = actionEnabled;
-            _validateButton.isEnabled = hasPendingAssets && actionEnabled;
-            _clearButton.isEnabled = hasPendingAssets && actionEnabled;
             _autoScanButton.isEnabled = PedestrianCrossingToolkitState.Enabled && actionEnabled;
             _autoScanButton.text = scanning ? "Scanning..." : "Auto\nScan";
             if (_autoScanPreviewCheckbox != null)
@@ -606,33 +682,25 @@ namespace PedestrianCrossingToolkit
             _rejectPreviewButton.isVisible = showPreviewControls;
             _applyPreviewButton.isVisible = showPreviewControls;
             _cancelPreviewButton.isVisible = showPreviewControls;
-            _rejectPreviewButton.isEnabled = showPreviewControls && PedestrianCrossingToolkitState.AutoScanPreviewAcceptedCount > 0;
-            _applyPreviewButton.isEnabled = showPreviewControls && PedestrianCrossingToolkitState.AutoScanPreviewAcceptedCount > 0;
-            _cancelPreviewButton.isEnabled = showPreviewControls;
-            _infoButton.isEnabled = PedestrianCrossingToolkitState.Enabled;
+            _rejectPreviewButton.isEnabled = !scanning
+                                             && showPreviewControls
+                                             && PedestrianCrossingToolkitState.AutoScanPreviewAcceptedCount > 0;
+            _applyPreviewButton.isEnabled = !scanning
+                                            && showPreviewControls
+                                            && PedestrianCrossingToolkitState.AutoScanPreviewAcceptedCount > 0;
+            _cancelPreviewButton.isEnabled = !scanning && showPreviewControls;
+            _closeButton.isEnabled = !scanning;
         }
 
         private static string GetSelectedModeStatusText(PedestrianToolMode mode)
         {
             switch (mode)
             {
-                case PedestrianToolMode.MidBlockCrossing:
-                    return "Standard Crossing: place a zebra crossing on a valid road segment or join.";
-                case PedestrianToolMode.SignalCrossing:
-                    return "Signalled Crossing: add vanilla signal control and Pedestrian Crossing Toolkit stop lines.";
-                case PedestrianToolMode.SubwayLink:
-                    return "Auto Subway: create a compact subway crossing across a valid road, rail, or metro target.";
-                case PedestrianToolMode.SubwayPointToPoint:
-                    return "Manual Subway: pick a start entrance, then an end entrance within range.";
-                case PedestrianToolMode.PedestrianBridge:
-                    return "Bridge: place a pedestrian bridge across a valid road, rail, or metro target.";
                 case PedestrianToolMode.AutoScanReject:
                     if (!string.IsNullOrEmpty(PedestrianCrossingToolkitState.StatusMessage))
                         return PedestrianCrossingToolkitState.StatusMessage;
 
                     return "Reject Proposal: click a yellow Auto Scan marker to remove that suggested crossing.";
-                case PedestrianToolMode.RemoveCrossing:
-                    return "Remove A Crossing: click an existing Pedestrian Crossing Toolkit crossing to remove its owned assets.";
                 default:
                     if (!string.IsNullOrEmpty(PedestrianCrossingToolkitState.StatusMessage)
                         && PedestrianCrossingToolkitState.StatusMessage != "No pedestrian crossing tool selected.")
@@ -640,7 +708,7 @@ namespace PedestrianCrossingToolkit
                         return PedestrianCrossingToolkitState.StatusMessage;
                     }
 
-                    return "Select a crossing tool. Right-click closes this panel when no tool is selected.";
+                    return "Manage existing PCT crossings here, or open Roads > Crossing to place one.";
             }
         }
 
@@ -727,20 +795,6 @@ namespace PedestrianCrossingToolkit
             return button;
         }
 
-        private static bool TryCopyToClipboard(string text)
-        {
-            try
-            {
-                GUIUtility.systemCopyBuffer = text ?? string.Empty;
-                return true;
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning("[PedestrianCrossingToolkit] Clipboard copy failed: " + e.Message);
-                return false;
-            }
-        }
-
         private static void RegisterInputShield(UIComponent component)
         {
             if (component == null)
@@ -814,7 +868,8 @@ namespace PedestrianCrossingToolkit
             return IsMouseOverComponent(Instance)
                    || IsMouseOverComponent(PedestrianCrossingAutoScanInstructionsPanel.Instance)
                    || IsMouseOverComponent(PedestrianCrossingToolkitLauncherButton.Instance)
-                   || IsMouseOverComponent(UnifiedTransitLauncherToolbar.Current);
+                   || IsMouseOverComponent(UnifiedTransitLauncherToolbar.Current)
+                   || PedestrianCrossingRoadsTab.IsMouseOverUi();
         }
 
         private static bool IsToolkitComponentOrChild(UIComponent component)
@@ -824,7 +879,8 @@ namespace PedestrianCrossingToolkit
                 if (component == Instance
                     || component == PedestrianCrossingAutoScanInstructionsPanel.Instance
                     || component == PedestrianCrossingToolkitLauncherButton.Instance
-                    || component == UnifiedTransitLauncherToolbar.Current)
+                    || component == UnifiedTransitLauncherToolbar.Current
+                    || PedestrianCrossingRoadsTab.IsToolkitComponentOrChild(component))
                     return true;
 
                 component = component.parent;

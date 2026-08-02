@@ -43,8 +43,8 @@ namespace PedestrianCrossingToolkit
 
     public static class CrossingApplicationEngine
     {
-        private static readonly CrossingPlacementAsset[] AssetBuffer = new CrossingPlacementAsset[512];
-        private static readonly CrossingNetworkOperation[] OperationBuffer = new CrossingNetworkOperation[1024];
+        private static CrossingPlacementAsset[] AssetBuffer = new CrossingPlacementAsset[512];
+        private static CrossingNetworkOperation[] OperationBuffer = new CrossingNetworkOperation[1024];
         private const int MaxOperationLogsPerRefresh = 12;
         private static CrossingApplicationSummary _lastSummary = CrossingApplicationSummary.Empty;
         private static CrossingNetworkValidationSummary _lastValidationSummary = CrossingNetworkValidationSummary.Empty;
@@ -78,6 +78,8 @@ namespace PedestrianCrossingToolkit
 
         public static void Refresh(string reason)
         {
+            ManagerCapacity.EnsureArrayCapacity(ref AssetBuffer, CrossingPlacementRegistry.Count);
+            ManagerCapacity.EnsureArrayCapacity(ref OperationBuffer, CrossingPlacementRegistry.Count * 2);
             int count = CrossingPlacementRegistry.CopyTo(AssetBuffer);
             _lastOperationCount = 0;
             int surfaceCrossings = 0;
@@ -139,8 +141,8 @@ namespace PedestrianCrossingToolkit
 
             _lastSummary = new CrossingApplicationSummary(count, _lastOperationCount, surfaceCrossings, signalCrossings, subwayLinks, pedestrianBridges, surfaceSuppressions, invalidPlans);
             _lastValidationSummary = ValidatePlannedOperations(reason);
-            Debug.Log("[PedestrianCrossingToolkit] Application refresh: reason=" + reason + " " + _lastSummary.ToLogString());
-            Debug.Log("[PedestrianCrossingToolkit] Network operation validation: reason=" + reason + " " + _lastValidationSummary.ToLogString());
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Application refresh: reason=" + reason + " " + _lastSummary.ToLogString());
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Network operation validation: reason=" + reason + " " + _lastValidationSummary.ToLogString());
             LogPlannedOperations(reason);
             _lastConnectivitySummary = CrossingConnectivityPlanner.Refresh(reason, AssetBuffer, count);
         }
@@ -165,7 +167,7 @@ namespace PedestrianCrossingToolkit
             _lastOperationCount = 0;
             if (forgottenSnapshots > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Application unload state forgotten without reverting network flags: snapshots="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Application unload state forgotten without reverting network flags: snapshots="
                           + forgottenSnapshots);
             }
         }
@@ -229,26 +231,24 @@ namespace PedestrianCrossingToolkit
 
         private static void AddOperation(CrossingNetworkOperationKind kind, CrossingPlacementAsset asset, ushort nodeId)
         {
-            if (_lastOperationCount >= OperationBuffer.Length)
-                return;
-
+            ManagerCapacity.EnsureArrayCapacity(ref OperationBuffer, _lastOperationCount + 1);
             OperationBuffer[_lastOperationCount++] = new CrossingNetworkOperation(kind, asset.Id, asset.Placement.SegmentId, nodeId, asset.Plan.Center);
         }
 
         private static void LogPlannedOperations(string reason)
         {
-            if (!PedestrianCrossingLog.VerboseDiagnostics)
+            if (!PedestrianCrossingLog.AdvancedDiagnostics)
                 return;
 
             int logCount = Mathf.Min(_lastOperationCount, MaxOperationLogsPerRefresh);
             for (int i = 0; i < logCount; i++)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Planned operation: reason=" + reason + " index=" + i + " " + OperationBuffer[i].ToLogString());
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Planned operation: reason=" + reason + " index=" + i + " " + OperationBuffer[i].ToLogString());
             }
 
             if (_lastOperationCount > logCount)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Planned operation log truncated: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Planned operation log truncated: reason="
                           + reason
                           + " shown=" + logCount
                           + " total=" + _lastOperationCount);
@@ -278,9 +278,9 @@ namespace PedestrianCrossingToolkit
                         break;
                 }
 
-                if (PedestrianCrossingLog.VerboseDiagnostics && i < logCount)
+                if (PedestrianCrossingLog.AdvancedDiagnostics && i < logCount)
                 {
-                    Debug.Log("[PedestrianCrossingToolkit] Operation validation detail: reason="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Operation validation detail: reason="
                               + reason
                               + " index=" + i
                               + " readiness=" + validation.Readiness
@@ -288,9 +288,9 @@ namespace PedestrianCrossingToolkit
                 }
             }
 
-            if (PedestrianCrossingLog.VerboseDiagnostics && _lastOperationCount > logCount)
+            if (PedestrianCrossingLog.AdvancedDiagnostics && _lastOperationCount > logCount)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Operation validation detail truncated: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Operation validation detail truncated: reason="
                           + reason
                           + " shown=" + logCount
                           + " total=" + _lastOperationCount);
@@ -435,7 +435,7 @@ namespace PedestrianCrossingToolkit
                     skipped++;
             }
 
-            Debug.Log("[PedestrianCrossingToolkit] Applied ready crossing operations: applied=" + applied + " skipped=" + skipped);
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Applied ready crossing operations: applied=" + applied + " skipped=" + skipped);
             return applied;
         }
 
@@ -481,7 +481,7 @@ namespace PedestrianCrossingToolkit
 
             SegmentSnapshots.Clear();
             NodeSnapshots.Clear();
-            Debug.Log("[PedestrianCrossingToolkit] Reverted applied crossing operation targets: reason=" + reason + " reverted=" + reverted);
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Reverted applied crossing operation targets: reason=" + reason + " reverted=" + reverted);
             return reverted;
         }
 
@@ -492,7 +492,7 @@ namespace PedestrianCrossingToolkit
             NodeSnapshots.Clear();
             if (tracked > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Applied crossing operation snapshots forgotten without network revert: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Applied crossing operation snapshots forgotten without network revert: reason="
                           + reason
                           + " snapshots="
                           + tracked);

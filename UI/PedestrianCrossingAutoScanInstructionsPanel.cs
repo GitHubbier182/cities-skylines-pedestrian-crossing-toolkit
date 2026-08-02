@@ -19,7 +19,9 @@ namespace PedestrianCrossingToolkit
         private static UITextureAtlas _bridgeIconAtlas;
         private static bool _pendingShow;
 
-        private UICheckBox _dontShowAgainCheckbox;
+        private UIButton _rejectButton;
+        private UIButton _applyButton;
+        private UIButton _cancelButton;
         private bool _started;
 
         public static void CreateIfNeeded(UIView view)
@@ -32,7 +34,7 @@ namespace PedestrianCrossingToolkit
 
         public static void ShowIfNeeded()
         {
-            if (PedestrianCrossingToolkitState.AutoScanPreviewInstructionsSuppressed)
+            if (!PedestrianCrossingToolkitState.HasAutoScanPreviewPlan)
                 return;
 
             UIView view = UIView.GetAView();
@@ -116,20 +118,24 @@ namespace PedestrianCrossingToolkit
             AddIconPreview(PedestrianToolMode.SubwayLink, "Subway", 250f);
             AddIconPreview(PedestrianToolMode.PedestrianBridge, "Bridge", 364f);
 
-            AddButtonPreview("Reject\nProposal", "Click a yellow marker, then reject that one suggestion.", 18f, 196f);
-            AddButtonPreview("Apply\nPreview", "Build every suggestion that is still accepted.", 18f, 238f);
-            AddButtonPreview("Cancel\nPreview", "Discard the staged scan without changing crossings.", 18f, 280f);
-
-            UIPanel dontShowRow = AddCheckBox(
-                this,
-                "Don't show this reminder again",
-                "Hide this Auto Scan preview reminder in future.",
-                false,
-                out _dontShowAgainCheckbox);
-            dontShowRow.relativePosition = new Vector3(18f, 322f);
-
-            UIButton ok = AddButton(this, "OK", PanelWidth - 92f, 321f, 74f, 24f, OnOkClicked);
-            ok.tooltip = "Close this reminder.";
+            _rejectButton = AddActionRow(
+                "Reject\nProposal",
+                "Select this, then click a yellow marker to reject that suggestion.",
+                18f,
+                196f,
+                OnRejectClicked);
+            _applyButton = AddActionRow(
+                "Apply\nPreview",
+                "Build every suggestion that is still accepted.",
+                18f,
+                238f,
+                OnApplyClicked);
+            _cancelButton = AddActionRow(
+                "Cancel\nPreview",
+                "Discard the staged scan without changing crossings.",
+                18f,
+                280f,
+                OnCancelClicked);
 
             _started = true;
             if (_pendingShow)
@@ -146,6 +152,26 @@ namespace PedestrianCrossingToolkit
             base.OnDestroy();
         }
 
+        public override void Update()
+        {
+            base.Update();
+
+            bool pending = PedestrianCrossingToolkitState.HasAutoScanPreviewPlan;
+            if (isVisible && !pending)
+            {
+                Hide();
+                return;
+            }
+
+            int accepted = PedestrianCrossingToolkitState.AutoScanPreviewAcceptedCount;
+            if (_rejectButton != null)
+                _rejectButton.isEnabled = pending && accepted > 0;
+            if (_applyButton != null)
+                _applyButton.isEnabled = pending && accepted > 0;
+            if (_cancelButton != null)
+                _cancelButton.isEnabled = pending;
+        }
+
         private void ShowNow(UIView view)
         {
             if (view == null)
@@ -154,25 +180,16 @@ namespace PedestrianCrossingToolkit
                 return;
 
             _pendingShow = false;
-            PositionNearToolkitPanel(view);
+            PositionPanel(view);
             Show();
             BringToFront();
-            Debug.Log("[PedestrianCrossingToolkit] Auto Scan preview instructions shown.");
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Auto Scan preview controls shown.");
         }
 
-        private void PositionNearToolkitPanel(UIView view)
+        private void PositionPanel(UIView view)
         {
             float x = Mathf.Max(16f, (view.fixedWidth - width) * 0.5f);
             float y = Mathf.Max(80f, (view.fixedHeight - height) * 0.5f);
-
-            if (PedestrianCrossingToolkitPanel.Instance != null && PedestrianCrossingToolkitPanel.Instance.isVisible)
-            {
-                Vector3 toolkitPosition = PedestrianCrossingToolkitPanel.Instance.absolutePosition;
-                x = toolkitPosition.x + PedestrianCrossingToolkitPanel.Instance.width + 12f;
-                y = toolkitPosition.y;
-                if (x + width > view.fixedWidth - 16f)
-                    x = Mathf.Max(16f, toolkitPosition.x - width - 12f);
-            }
 
             relativePosition = new Vector3(
                 Mathf.Clamp(x, 8f, Mathf.Max(8f, view.fixedWidth - width - 8f)),
@@ -219,47 +236,18 @@ namespace PedestrianCrossingToolkit
             label.textAlignment = UIHorizontalAlignment.Center;
         }
 
-        private void AddButtonPreview(string buttonText, string description, float x, float y)
+        private UIButton AddActionRow(
+            string buttonText,
+            string description,
+            float x,
+            float y,
+            MouseEventHandler onClick)
         {
-            UIButton button = AddButton(this, buttonText, x, y, 116f, 34f, null);
-            button.isInteractive = false;
+            UIButton button = AddButton(this, buttonText, x, y, 116f, 34f, onClick);
 
             UILabel label = AddLabel(this, description, x + 136f, y + 2f, PanelWidth - x - 154f, 34f, 0.57f);
             label.wordWrap = true;
-        }
-
-        private UIPanel AddCheckBox(UIComponent parent, string text, string tooltip, bool initial, out UICheckBox checkbox)
-        {
-            UIPanel row = parent.AddUIComponent<UIPanel>();
-            row.width = 260f;
-            row.height = 24f;
-            row.tooltip = tooltip;
-            RegisterInputShield(row);
-
-            checkbox = row.AddUIComponent<UICheckBox>();
-            checkbox.width = 22f;
-            checkbox.height = 22f;
-            checkbox.relativePosition = new Vector3(0f, 1f);
-            checkbox.tooltip = tooltip;
-            RegisterInputShield(checkbox);
-
-            UISprite uncheckedSprite = checkbox.AddUIComponent<UISprite>();
-            uncheckedSprite.spriteName = "check-unchecked";
-            uncheckedSprite.size = new Vector2(16f, 16f);
-            uncheckedSprite.relativePosition = new Vector3(2f, 3f);
-            RegisterInputShield(uncheckedSprite);
-
-            UISprite checkedSprite = uncheckedSprite.AddUIComponent<UISprite>();
-            checkedSprite.spriteName = "check-checked";
-            checkedSprite.size = uncheckedSprite.size;
-            checkedSprite.relativePosition = Vector3.zero;
-            checkbox.checkedBoxObject = checkedSprite;
-            checkbox.isChecked = initial;
-            RegisterInputShield(checkedSprite);
-
-            UILabel label = AddLabel(row, text, 26f, 4f, 228f, 18f, 0.58f);
-            label.tooltip = tooltip;
-            return row;
+            return button;
         }
 
         private UILabel AddLabel(UIComponent parent, string text, float x, float y, float labelWidth, float labelHeight, float scale)
@@ -300,20 +288,47 @@ namespace PedestrianCrossingToolkit
 
         private void OnCloseClicked(UIComponent component, UIMouseEventParameter p)
         {
-            ApplyDontShowPreference();
             Hide();
         }
 
-        private void OnOkClicked(UIComponent component, UIMouseEventParameter p)
+        private void OnRejectClicked(UIComponent component, UIMouseEventParameter p)
         {
-            ApplyDontShowPreference();
+            if (!PedestrianCrossingToolkitState.HasAutoScanPreviewPlan)
+                return;
+
+            PedestrianCrossingToolkitPanel.NotifyToolkitUiInput(false);
+            PedestrianCrossingToolkitPanel.ActivateModeFromUi(PedestrianToolMode.AutoScanReject);
+        }
+
+        private void OnApplyClicked(UIComponent component, UIMouseEventParameter p)
+        {
+            if (!PedestrianCrossingToolkitState.HasAutoScanPreviewPlan)
+                return;
+
+            CancelActiveTool();
+            PedestrianCrossingToolkitState.ApplyAutoScanPreview();
             Hide();
         }
 
-        private void ApplyDontShowPreference()
+        private void OnCancelClicked(UIComponent component, UIMouseEventParameter p)
         {
-            if (_dontShowAgainCheckbox != null && _dontShowAgainCheckbox.isChecked)
-                PedestrianCrossingToolkitState.SetAutoScanPreviewInstructionsSuppressed(true);
+            if (!PedestrianCrossingToolkitState.HasAutoScanPreviewPlan)
+                return;
+
+            CancelActiveTool();
+            PedestrianCrossingToolkitState.CancelAutoScanPreview();
+            Hide();
+        }
+
+        private static void CancelActiveTool()
+        {
+            PedestrianCrossingToolkitPanel.NotifyToolkitUiInput(false);
+            PedestrianCrossingToolkitState.SetActiveMode(PedestrianToolMode.None);
+            if (ToolsModifierControl.toolController != null
+                && ToolsModifierControl.toolController.CurrentTool is PedestrianCrossingInteractionTool)
+            {
+                ToolsModifierControl.SetTool<DefaultTool>();
+            }
         }
 
         private static UITextureAtlas GetOrCreateIconAtlas(PedestrianToolMode mode)

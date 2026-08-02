@@ -80,7 +80,7 @@ namespace PedestrianCrossingToolkit
             {
                 if (!forceOffRoadSubwayLandings && hasPedestrianLanes)
                 {
-                    Debug.Log("[PedestrianCrossingToolkit] Grade separated geometry rejected: unusable pedestrian lane extents for asset="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade separated geometry rejected: unusable pedestrian lane extents for asset="
                               + asset.Id
                               + " segment="
                               + asset.Placement.SegmentId);
@@ -95,7 +95,7 @@ namespace PedestrianCrossingToolkit
                 secondLateralOffset = landingHalfWidth;
                 usesLaneTargets = false;
                 endpointSource = forceOffRoadSubwayLandings ? "non-road-subway-landings" : "road-edge-landings";
-                Debug.Log("[PedestrianCrossingToolkit] Grade separated geometry using off-road landing endpoints: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade separated geometry using off-road landing endpoints: asset="
                           + asset.Id
                           + " segment="
                           + asset.Placement.SegmentId
@@ -133,7 +133,7 @@ namespace PedestrianCrossingToolkit
             }
 
             geometry = new GradeSeparatedPlacementGeometry(linkKind, first, second, roadDirection, junction, usesLaneTargets);
-            Debug.Log("[PedestrianCrossingToolkit] Grade separated geometry resolved: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade separated geometry resolved: asset="
                       + asset.Id
                       + " segment="
                       + asset.Placement.SegmentId

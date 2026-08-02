@@ -52,6 +52,29 @@ namespace PedestrianCrossingToolkit
             }
         }
 
+        internal static void ResetForLevelChange()
+        {
+            SignalLightSnapshots.Clear();
+            _resolved = false;
+            _available = false;
+            _junctionRestrictionsManager = null;
+            _trafficLightSimulationManager = null;
+            _customSegmentLightsManager = null;
+            _setPedestrianCrossingAllowed = null;
+            _isPedestrianCrossingAllowed = null;
+            _hasActiveTimedSimulation = null;
+            _getSegmentLightsByNode = null;
+            _getSegmentLightsByEnd = null;
+            _setSegmentLights = null;
+            _removeSegmentLight = null;
+            _cloneSegmentLights = null;
+            _setLights = null;
+            _updateVisuals = null;
+            _manualPedestrianMode = null;
+            _pedestrianLightState = null;
+            _trafficLightInteropAvailable = false;
+        }
+
         public static bool SetPedestrianCrossingAllowed(ushort segmentId, bool startNode, bool allowed)
         {
             if (!PedestrianCrossingToolkitState.TrafficManagerInteropAllowed)
@@ -71,7 +94,7 @@ namespace PedestrianCrossingToolkit
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[PedestrianCrossingToolkit] TM:PE pedestrian crossing API call failed: segment="
+                PedestrianCrossingLog.Warning("TM:PE pedestrian crossing API call failed: segment="
                                  + segmentId
                                  + " startNode="
                                  + startNode
@@ -109,7 +132,7 @@ namespace PedestrianCrossingToolkit
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[PedestrianCrossingToolkit] TM:PE pedestrian crossing query failed: segment="
+                PedestrianCrossingLog.Warning("TM:PE pedestrian crossing query failed: segment="
                                  + segmentId
                                  + " startNode="
                                  + startNode
@@ -135,7 +158,7 @@ namespace PedestrianCrossingToolkit
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[PedestrianCrossingToolkit] TM:PE timed light query failed: node="
+                PedestrianCrossingLog.Warning("TM:PE timed light query failed: node="
                                  + nodeId
                                  + " error="
                                  + e.GetType().Name
@@ -191,7 +214,7 @@ namespace PedestrianCrossingToolkit
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[PedestrianCrossingToolkit] TM:PE signal light state failed: node="
+                PedestrianCrossingLog.Warning("TM:PE signal light state failed: node="
                                  + nodeId
                                  + " segment="
                                  + segmentId
@@ -238,7 +261,7 @@ namespace PedestrianCrossingToolkit
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[PedestrianCrossingToolkit] TM:PE signal light restore failed: node="
+                PedestrianCrossingLog.Warning("TM:PE signal light restore failed: node="
                                  + nodeId
                                  + " segment="
                                  + segmentId
@@ -272,7 +295,7 @@ namespace PedestrianCrossingToolkit
             }
             catch (Exception e)
             {
-                Debug.LogWarning("[PedestrianCrossingToolkit] TM:PE signal light clear failed: node="
+                PedestrianCrossingLog.Warning("TM:PE signal light clear failed: node="
                                  + nodeId
                                  + " segment="
                                  + segmentId
@@ -340,7 +363,7 @@ namespace PedestrianCrossingToolkit
                 _setPedestrianCrossingAllowed = setPedestrianCrossingAllowed;
                 _isPedestrianCrossingAllowed = isPedestrianCrossingAllowed;
                 _available = true;
-                Debug.Log("[PedestrianCrossingToolkit] TM:PE pedestrian crossing API detected; grade-separated suppression will use TM:PE crossing bans when available.");
+                PedestrianCrossingLog.UnityInfo("TM:PE pedestrian crossing API detected; grade-separated suppression will use TM:PE crossing bans when available.");
 
                 ResolveTrafficLightInterop(managerFactory);
             }
@@ -397,7 +420,7 @@ namespace PedestrianCrossingToolkit
 
                 _trafficLightInteropAvailable = _getSegmentLightsByEnd != null && _setLights != null;
                 if (_trafficLightInteropAvailable)
-                    Debug.Log("[PedestrianCrossingToolkit] TM:PE signal light API detected; signal crossings will mirror phase state into TM:PE lights.");
+                    PedestrianCrossingLog.UnityInfo("TM:PE signal light API detected; signal crossings will mirror phase state into TM:PE lights.");
             }
             catch (Exception e)
             {

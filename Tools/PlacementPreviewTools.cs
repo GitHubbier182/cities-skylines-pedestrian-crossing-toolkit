@@ -1309,7 +1309,7 @@ namespace PedestrianCrossingToolkit
             _vanillaCrossingCacheReady = true;
             _vanillaCrossingCacheDirty = false;
             _vanillaCrossingNetworkQuietTimer = 0f;
-            Debug.Log("[PedestrianCrossingToolkit] Vanilla crossing cache refreshed: reason="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Vanilla crossing cache refreshed: reason="
                       + reason
                       + " crossings="
                       + VanillaCrossingCache.Count);
@@ -1352,7 +1352,7 @@ namespace PedestrianCrossingToolkit
             _vanillaCrossingCacheReady = true;
             _vanillaCrossingCacheDirty = false;
             _vanillaCrossingCacheRefreshInProgress = false;
-            Debug.Log("[PedestrianCrossingToolkit] Vanilla crossing cache refreshed: reason="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Vanilla crossing cache refreshed: reason="
                       + _vanillaCrossingCacheRefreshReason
                       + " crossings="
                       + VanillaCrossingCache.Count);
@@ -1779,20 +1779,20 @@ namespace PedestrianCrossingToolkit
         }
     }
 
-    public static class RemovalCrossingTool
+    public static class CrossingInspectionTool
     {
         public static void Reset()
         {
         }
 
-        public static CrossingPlacementResult PreviewRemoval(ushort segmentId, float segmentPosition, Vector3 worldPosition, bool nearNode, int slotNumber, bool isEndSegmentSlot)
+        public static CrossingPlacementResult PreviewInspection(ushort segmentId, float segmentPosition, Vector3 worldPosition, bool nearNode, int slotNumber, bool isEndSegmentSlot)
         {
             if (segmentId == 0)
                 return CrossingPlacementResult.Invalid("No supported crossing target selected.");
 
-            CrossingPlacementRecord probe = new CrossingPlacementRecord(PedestrianToolMode.RemoveCrossing, segmentId, segmentPosition, worldPosition, true, "Remove crossing preview accepted.", nearNode, slotNumber, isEndSegmentSlot);
+            CrossingPlacementRecord probe = new CrossingPlacementRecord(PedestrianToolMode.InspectCrossing, segmentId, segmentPosition, worldPosition, true, "Crossing inspection target accepted.", nearNode, slotNumber, isEndSegmentSlot);
             return CrossingPlacementRegistry.HasAssetAt(probe)
-                ? CrossingPlacementResult.Valid("Remove crossing preview accepted.")
+                ? CrossingPlacementResult.Valid("Crossing inspection target accepted.")
                 : CrossingPlacementResult.Invalid("No crossing at this location.");
         }
     }

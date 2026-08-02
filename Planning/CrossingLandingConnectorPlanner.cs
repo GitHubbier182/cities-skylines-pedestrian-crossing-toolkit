@@ -187,8 +187,8 @@ namespace PedestrianCrossingToolkit
         private const float BentEntranceDistance = 11f;
         private const float SplitEntranceDistance = 7f;
         public const float SubwayEntranceReuseRadius = 10f;
-        private static readonly CrossingLandingConnectorWorkOrder[] WorkOrderBuffer = new CrossingLandingConnectorWorkOrder[2048];
-        private static readonly CrossingLandingAccessAssetWorkOrder[] AccessAssetBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
+        private static CrossingLandingConnectorWorkOrder[] WorkOrderBuffer = new CrossingLandingConnectorWorkOrder[2048];
+        private static CrossingLandingAccessAssetWorkOrder[] AccessAssetBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
         private static int _workOrderCount;
         private static int _accessAssetCount;
         private static CrossingLandingConnectorSummary _lastSummary = CrossingLandingConnectorSummary.Empty;
@@ -201,6 +201,11 @@ namespace PedestrianCrossingToolkit
         public static int AccessAssetCount
         {
             get { return _accessAssetCount; }
+        }
+
+        public static int WorkOrderCount
+        {
+            get { return _workOrderCount; }
         }
 
         public static void Refresh(string reason, CrossingConnectivityLink[] links, int linkCount, CrossingConnectivityCandidate[] candidates, int candidateCount)
@@ -242,7 +247,7 @@ namespace PedestrianCrossingToolkit
             }
 
             _lastSummary = new CrossingLandingConnectorSummary(landings, connected, unresolved, pedestrianLaneTargets, siblingLandingTargets, prefabReady, missingPrefab);
-            Debug.Log("[PedestrianCrossingToolkit] Landing connector planning: reason="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing connector planning: reason="
                       + reason
                       + " "
                       + _lastSummary.ToLogString()
@@ -250,7 +255,7 @@ namespace PedestrianCrossingToolkit
                       + MaxConnectorDistance.ToString("0.0")
                       + " bridgeAccessOffset="
                       + BridgeAccessOffset.ToString("0.0"));
-            Debug.Log("[PedestrianCrossingToolkit] Landing access asset planning: reason="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing access asset planning: reason="
                       + reason
                       + " total="
                       + _accessAssetCount
@@ -320,7 +325,7 @@ namespace PedestrianCrossingToolkit
                 && !TryResolveOffRoadAccessPosition(link, assetKind, deckPosition, ref position, endpointName))
             {
                 unresolved++;
-                Debug.Log("[PedestrianCrossingToolkit] Landing connector unresolved because access could not be moved off road: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing connector unresolved because access could not be moved off road: reason="
                           + reason
                           + " asset="
                           + link.AssetId
@@ -357,7 +362,7 @@ namespace PedestrianCrossingToolkit
                     targetKind = CrossingLandingConnectorTargetKind.RoadEdgeLanding;
 
                 AddAccessAsset(link, firstEndpoint, endpointName, GetDefaultAccessKind(link), targetKind, position);
-                Debug.Log("[PedestrianCrossingToolkit] Landing connector unresolved: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing connector unresolved: reason="
                           + reason
                           + " asset="
                           + link.AssetId
@@ -588,10 +593,10 @@ namespace PedestrianCrossingToolkit
 
         private static void LogSubwayEntranceReuse(int assetId, string endpointName, CrossingLandingAccessAssetWorkOrder reusableEntrance, Vector3 requestedPosition)
         {
-            if (!PedestrianCrossingLog.VerboseDiagnostics)
+            if (!PedestrianCrossingLog.AdvancedDiagnostics)
                 return;
 
-            Debug.Log("[PedestrianCrossingToolkit] Subway entrance reused: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Subway entrance reused: asset="
                       + assetId
                       + " endpoint="
                       + endpointName
@@ -623,17 +628,13 @@ namespace PedestrianCrossingToolkit
 
         private static void AddWorkOrder(CrossingLandingConnectorWorkOrder order)
         {
-            if (_workOrderCount >= WorkOrderBuffer.Length)
-                return;
-
+            ManagerCapacity.EnsureArrayCapacity(ref WorkOrderBuffer, _workOrderCount + 1);
             WorkOrderBuffer[_workOrderCount++] = order;
         }
 
         private static void AddAccessAsset(CrossingConnectivityLink link, bool firstEndpoint, string endpointName, CrossingLandingAccessKind accessKind, CrossingLandingConnectorTargetKind targetKind, Vector3 position)
         {
-            if (_accessAssetCount >= AccessAssetBuffer.Length)
-                return;
-
+            ManagerCapacity.EnsureArrayCapacity(ref AccessAssetBuffer, _accessAssetCount + 1);
             Vector3 deckPosition = firstEndpoint ? link.FirstPosition : link.SecondPosition;
             Vector3 crossingDirection = link.SecondPosition - link.FirstPosition;
             crossingDirection.y = 0f;
@@ -719,19 +720,35 @@ namespace PedestrianCrossingToolkit
             TryAddJunctionLaneAccessAsset(link, endpointName, accessKind, deckPosition, position, out accessPosition);
         }
 
-        private static bool TryAddJunctionLaneAccessAsset(CrossingConnectivityLink link, string endpointName, CrossingLandingAccessKind accessKind, Vector3 deckPosition, Vector3 position, out Vector3 accessPosition)
+        private static bool TryAddJunctionLaneAccessAsset(CrossingConnectivityLink link, string endpointName, CrossingLandingAccessKind accessKind, Vector3 deckPosition, Vector3 position, out Vector3 accessPosition, bool allowBridgePadFallback = false)
         {
-            if (_accessAssetCount >= AccessAssetBuffer.Length)
-            {
-                accessPosition = Vector3.zero;
-                return false;
-            }
+            ManagerCapacity.EnsureArrayCapacity(ref AccessAssetBuffer, _accessAssetCount + 1);
 
             CrossingLandingAccessAssetKind assetKind = GetAccessAssetKind(link);
+            Vector3 requestedPosition = position;
             if (!TryResolveOffRoadAccessPosition(link, assetKind, deckPosition, ref position, endpointName))
             {
-                accessPosition = Vector3.zero;
-                return false;
+                if (assetKind != CrossingLandingAccessAssetKind.BridgeStairRampLanding || !allowBridgePadFallback)
+                {
+                    accessPosition = Vector3.zero;
+                    return false;
+                }
+
+                // A legal bridge still owns two exits. The released bridge design
+                // allowed its final stair pad to use the requested pavement position
+                // when the conservative off-road/junction guard could not approve
+                // either orientation; that guard may choose a side, but must not
+                // delete an endpoint from the accepted bridge plan.
+                position = requestedPosition;
+                PedestrianCrossingLog.Advanced(
+                    "[PedestrianCrossingToolkit] Bridge access using pavement fallback: asset="
+                    + link.AssetId
+                    + " segment="
+                    + link.SegmentId
+                    + " endpoint="
+                    + endpointName
+                    + " position="
+                    + position);
             }
 
             if (assetKind == CrossingLandingAccessAssetKind.BridgeStairRampLanding)
@@ -931,7 +948,12 @@ namespace PedestrianCrossingToolkit
             {
                 Vector3 alternativePosition = deckPosition - (position - deckPosition);
                 if (!TryAddBridgeLaneAccessAsset(link, endpointName, deckPosition, alternativePosition, out accessPosition))
-                    return;
+                {
+                    // Preserve the proven two-exit bridge contract: after both safer
+                    // orientations fail the conservative placement guard, retain the
+                    // preferred pavement landing instead of dropping this endpoint.
+                    TryAddBridgeLaneAccessAsset(link, endpointName, deckPosition, position, out accessPosition, true);
+                }
             }
 
             Vector3 exitPosition = GetBridgeExitWalkOutPosition(deckPosition, accessPosition);
@@ -1199,9 +1221,9 @@ namespace PedestrianCrossingToolkit
             AddJunctionLaneAccessAsset(link, endpointName, CrossingLandingAccessKind.BridgeStraightStairs, deckPosition, position);
         }
 
-        private static bool TryAddBridgeLaneAccessAsset(CrossingConnectivityLink link, string endpointName, Vector3 deckPosition, Vector3 position, out Vector3 accessPosition)
+        private static bool TryAddBridgeLaneAccessAsset(CrossingConnectivityLink link, string endpointName, Vector3 deckPosition, Vector3 position, out Vector3 accessPosition, bool allowBridgePadFallback = false)
         {
-            return TryAddJunctionLaneAccessAsset(link, endpointName, CrossingLandingAccessKind.BridgeStraightStairs, deckPosition, position, out accessPosition);
+            return TryAddJunctionLaneAccessAsset(link, endpointName, CrossingLandingAccessKind.BridgeStraightStairs, deckPosition, position, out accessPosition, allowBridgePadFallback);
         }
 
         private static float GetBridgeRampRunDistance(float preferredDistance)
@@ -1258,7 +1280,7 @@ namespace PedestrianCrossingToolkit
                 position += direction * OffRoadAccessNudge;
             }
 
-            Debug.Log("[PedestrianCrossingToolkit] Grade separated access asset could not be moved off road: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade separated access asset could not be moved off road: asset="
                       + link.AssetId
                       + " segment="
                       + link.SegmentId
@@ -1338,7 +1360,7 @@ namespace PedestrianCrossingToolkit
 
             if (HorizontalDistance(resolvedPosition, requestedPosition) > 0.25f)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Access asset anchored to pedestrian lane: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Access asset anchored to pedestrian lane: asset="
                           + link.AssetId
                           + " segment="
                           + link.SegmentId
@@ -1424,7 +1446,7 @@ namespace PedestrianCrossingToolkit
 
             if (log)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge access pad skipped toward junction: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge access pad skipped toward junction: asset="
                           + link.AssetId
                           + " segment="
                           + link.SegmentId
@@ -1520,18 +1542,18 @@ namespace PedestrianCrossingToolkit
 
         private static void LogWorkOrders(string reason)
         {
-            if (!PedestrianCrossingLog.VerboseDiagnostics)
+            if (!PedestrianCrossingLog.AdvancedDiagnostics)
                 return;
 
             int logCount = Mathf.Min(_workOrderCount, MaxConnectorLogsPerRefresh);
             for (int i = 0; i < logCount; i++)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Landing connector work order: reason=" + reason + " index=" + i + " " + WorkOrderBuffer[i].ToLogString());
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing connector work order: reason=" + reason + " index=" + i + " " + WorkOrderBuffer[i].ToLogString());
             }
 
             if (_workOrderCount > logCount)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Landing connector work order log truncated: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing connector work order log truncated: reason="
                           + reason
                           + " shown=" + logCount
                           + " total=" + _workOrderCount);
@@ -1540,18 +1562,18 @@ namespace PedestrianCrossingToolkit
 
         private static void LogAccessAssets(string reason)
         {
-            if (!PedestrianCrossingLog.VerboseDiagnostics)
+            if (!PedestrianCrossingLog.AdvancedDiagnostics)
                 return;
 
             int logCount = Mathf.Min(_accessAssetCount, MaxConnectorLogsPerRefresh);
             for (int i = 0; i < logCount; i++)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Landing access asset work order: reason=" + reason + " index=" + i + " " + AccessAssetBuffer[i].ToLogString());
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing access asset work order: reason=" + reason + " index=" + i + " " + AccessAssetBuffer[i].ToLogString());
             }
 
             if (_accessAssetCount > logCount)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Landing access asset work order log truncated: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing access asset work order log truncated: reason="
                           + reason
                           + " shown=" + logCount
                           + " total=" + _accessAssetCount);

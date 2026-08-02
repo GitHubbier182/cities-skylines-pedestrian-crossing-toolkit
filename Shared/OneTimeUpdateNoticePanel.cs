@@ -5,6 +5,26 @@ using UnityEngine;
 
 namespace ScratchyBald.CitiesSkylines.UI
 {
+    internal sealed class ReleaseNoticeVersion
+    {
+        public readonly string Version;
+        public readonly string SteamReleaseTime;
+        public readonly string[] Bullets;
+        public readonly bool HasTechnicalChanges;
+
+        public ReleaseNoticeVersion(
+            string version,
+            string steamReleaseTime,
+            string[] bullets,
+            bool hasTechnicalChanges)
+        {
+            Version = version ?? string.Empty;
+            SteamReleaseTime = steamReleaseTime ?? string.Empty;
+            Bullets = bullets ?? new string[0];
+            HasTechnicalChanges = hasTechnicalChanges;
+        }
+    }
+
     internal sealed class ReleaseNoticeContent
     {
         public readonly string PlayerPrefsKey;
@@ -17,6 +37,7 @@ namespace ScratchyBald.CitiesSkylines.UI
         public readonly bool HasUnderTheHoodChanges;
         public readonly string PrimaryButtonLabel;
         public readonly Action PrimaryAction;
+        public readonly ReleaseNoticeVersion[] EarlierVersions;
 
         public ReleaseNoticeContent(
             string playerPrefsKey,
@@ -28,7 +49,8 @@ namespace ScratchyBald.CitiesSkylines.UI
             string[] bullets,
             bool hasUnderTheHoodChanges,
             string primaryButtonLabel,
-            Action primaryAction)
+            Action primaryAction,
+            ReleaseNoticeVersion[] earlierVersions)
         {
             PlayerPrefsKey = playerPrefsKey ?? string.Empty;
             NoticeId = noticeId ?? string.Empty;
@@ -40,6 +62,7 @@ namespace ScratchyBald.CitiesSkylines.UI
             HasUnderTheHoodChanges = hasUnderTheHoodChanges;
             PrimaryButtonLabel = primaryButtonLabel ?? string.Empty;
             PrimaryAction = primaryAction;
+            EarlierVersions = earlierVersions ?? new ReleaseNoticeVersion[0];
         }
 
         public bool Enabled
@@ -62,7 +85,7 @@ namespace ScratchyBald.CitiesSkylines.UI
     {
         private const string ActivePanelName = "ScratchyBaldOneTimeUpdateNoticePanel";
         private const string PendingPanelName = "ScratchyBaldPendingUpdateNoticePanel";
-        private const string ReceiptGeneration = ".PlayerFocusedReceiptV4";
+        private const string ReceiptGeneration = ".RollingHistoryReceiptV5";
 
         private static OneTimeUpdateNoticePanel Instance;
 
@@ -91,7 +114,7 @@ namespace ScratchyBald.CitiesSkylines.UI
                 return;
 
             string shownNoticeId = PlayerPrefs.GetString(GetReceiptKey(content), string.Empty);
-            if (string.Equals(shownNoticeId, content.NoticeId, StringComparison.Ordinal))
+            if (string.Equals(shownNoticeId, GetReceiptId(content), StringComparison.Ordinal))
                 return;
 
             OneTimeUpdateNoticePanel panel = view.AddUIComponent(typeof(OneTimeUpdateNoticePanel)) as OneTimeUpdateNoticePanel;
@@ -161,7 +184,7 @@ namespace ScratchyBald.CitiesSkylines.UI
 
             if (_built)
             {
-                PlayerPrefs.SetString(GetReceiptKey(_content), _content.NoticeId);
+                PlayerPrefs.SetString(GetReceiptKey(_content), GetReceiptId(_content));
                 PlayerPrefs.Save();
             }
         }
@@ -169,6 +192,12 @@ namespace ScratchyBald.CitiesSkylines.UI
         private static string GetReceiptKey(ReleaseNoticeContent content)
         {
             return content.PlayerPrefsKey + ReceiptGeneration;
+        }
+
+        private static string GetReceiptId(ReleaseNoticeContent content)
+        {
+            return content.NoticeId + ".B" +
+                   ScratchyBald.CitiesSkylines.Build.InternalBuildIdentity.BuildNumber;
         }
 
         private void Build()
@@ -305,31 +334,70 @@ namespace ScratchyBald.CitiesSkylines.UI
         {
             int maxChars = EstimateCharsPerLine(contentWidth, BodyTextScale);
             var lines = new List<string>();
-            AppendWrapped(lines, _content.Intro, maxChars, string.Empty, string.Empty);
+            AppendWrapped(
+                lines,
+                "Updates are listed newest first. Scroll back to the last version you played to catch up.",
+                maxChars,
+                string.Empty,
+                string.Empty);
+            lines.Add(string.Empty);
 
-            if (_content.Bullets.Length > 0)
-                lines.Add(string.Empty);
+            AppendVersion(
+                lines,
+                maxChars,
+                _content.NoticeId,
+                "Not yet released on Steam",
+                _content.Bullets,
+                _content.HasUnderTheHoodChanges);
 
-            for (int i = 0; i < _content.Bullets.Length; i++)
+            for (int i = 0; i < _content.EarlierVersions.Length; i++)
             {
-                AppendWrapped(lines, _content.Bullets[i], maxChars, "- ", "  ");
-                if (i < _content.Bullets.Length - 1)
-                    lines.Add(string.Empty);
+                ReleaseNoticeVersion version = _content.EarlierVersions[i];
+                if (version == null)
+                    continue;
+
+                lines.Add(string.Empty);
+                AppendVersion(
+                    lines,
+                    maxChars,
+                    version.Version,
+                    version.SteamReleaseTime,
+                    version.Bullets,
+                    version.HasTechnicalChanges);
             }
 
-            if (_content.HasUnderTheHoodChanges)
+            return string.Join("\n", lines.ToArray());
+        }
+
+        private void AppendVersion(
+            List<string> lines,
+            int maxChars,
+            string version,
+            string steamReleaseTime,
+            string[] bullets,
+            bool hasTechnicalChanges)
+        {
+            AppendWrapped(lines, version, maxChars, string.Empty, string.Empty);
+            AppendWrapped(
+                lines,
+                steamReleaseTime,
+                maxChars,
+                "Steam release: ",
+                "  ");
+
+            string[] versionBullets = bullets ?? new string[0];
+            for (int i = 0; i < versionBullets.Length; i++)
+                AppendWrapped(lines, versionBullets[i], maxChars, "- ", "  ");
+
+            if (hasTechnicalChanges)
             {
-                if (_content.Bullets.Length > 0)
-                    lines.Add(string.Empty);
                 AppendWrapped(
                     lines,
-                    "Under the hood improvements & fixes.",
+                    "Other technical fixes and under the hood improvements.",
                     maxChars,
                     "- ",
                     "  ");
             }
-
-            return string.Join("\n", lines.ToArray());
         }
 
         private void AppendWrapped(List<string> lines, string text, int maxChars, string firstPrefix, string continuationPrefix)

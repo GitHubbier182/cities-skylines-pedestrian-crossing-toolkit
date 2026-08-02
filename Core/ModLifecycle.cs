@@ -11,29 +11,90 @@ namespace PedestrianCrossingToolkit
     {
         public string Name => "Pedestrian Crossing Toolkit";
         public string Description => "Adds a foundation for mid-block crossings, controlled pedestrian crossings, and compact subway links.";
+
+        public void OnSettingsUI(UIHelperBase helper)
+        {
+            UIHelperBase management = helper.AddGroup("Crossing Management");
+            management.AddButton(
+                "Clear All Crossings",
+                PedestrianCrossingToolkitPanel.RequestClearAllCrossingsFromOptions);
+
+            UIHelperBase diagnostics = helper.AddGroup("Diagnostics");
+            diagnostics.AddCheckbox(
+                "Enable advanced logs",
+                PedestrianCrossingLog.AdvancedDiagnostics,
+                delegate(bool value)
+                {
+                    PedestrianCrossingLog.AdvancedDiagnostics = value;
+                });
+
+        }
     }
 
     public class PedestrianCrossingToolkitLoading : LoadingExtensionBase
     {
         private static readonly ReleaseNoticeContent ReleaseNotice = new ReleaseNoticeContent(
             "PedestrianCrossingToolkit.ShownReleaseNoticeId",
-            "v1.3.0",
-            "Pedestrian Crossing Toolkit 1.3.0",
-            "Faster large cities and safe road upgrades",
-            "Everything added since the released v1.2.0:",
+            "v2.0.0",
+            "Pedestrian Crossing Toolkit 2.0.0",
+            "Roads-menu tools",
+            string.Empty,
             "PCT",
             new[]
             {
-                "Expanded-capacity cities remain responsive during loading and crossing scans.",
-                "Auto Scan watches pedestrians for one minute, prioritises busy junctions and useful upgrades, keeps straight-road crossings sparse and can preview up to 50 suggestions.",
-                "The Toolkit minimises to 'Monitoring your city' during a scan, then returns with results or preview guidance and can recommend another pass.",
-                "Supported road-upgrade mods can preserve standard, signalled, subway and bridge crossings when replacing roads.",
-                "Under the hood improvements for better reliability and maintainability.",
-                "Significantly improved game lag / slowness issues with a new shared resource for Scratchy's mods."
+                "The floating PCT Tool and its launcher are removed: Standard, Signalled, Auto Subway, Manual Subway, Bridge and Auto Scan are now in Roads > Crossing.",
+                "Inspect Crossing is now automatic while Roads > Crossing is open, showing crossing types from city scale and details or live signal phases when zoomed in.",
+                "Use vanilla Bulldoze to remove one PCT crossing without demolishing its road; confirmed Clear All Crossings is now in PCT Options.",
+                "The old manual validation action is replaced by scheduled read-only checks that warn you and mark crossings needing attention without changing them.",
+                "Auto Scan asks whether to preview: Reject, Apply and Cancel appear for a preview, while direct apply needs no separate PCT Tool.",
+                "Auto Scan significantly improved so it's faster, more accurate and creates more crossings in one pass."
             },
             true,
             string.Empty,
-            null);
+            null,
+            new[]
+            {
+                new ReleaseNoticeVersion("v1.3.0", "29 July 2026, 02:06 BST", new[]
+                {
+                    "Expanded-capacity cities no longer become stuck during load or crossing scans.",
+                    "Auto Scan observes real crossings, prioritises busy junctions and keeps automatic crossings spaced.",
+                    "Supported road upgrades preserve standard, signal, subway and bridge crossings."
+                }, true),
+                new ReleaseNoticeVersion("v1.2.0", "10 July 2026, 22:51 BST", new[]
+                {
+                    "Improves bridge, subway entrance and standard crossing visuals with more detailed structures and markings."
+                }, true),
+                new ReleaseNoticeVersion("v1.1.1", "16 June 2026, 23:03 BST", new string[0], true),
+                new ReleaseNoticeVersion("v1.1.0", "12 June 2026, 22:57 BST", new[]
+                {
+                    "Adds optional Auto Scan preview, review, reject, apply and cancel controls.",
+                    "Improves suggestions for long roads, busy crossings and junction throats."
+                }, true),
+                new ReleaseNoticeVersion("v1.0.4", "7 June 2026, 23:53 BST", new[]
+                {
+                    "Improves UnifiedUI launcher compatibility and surface markings.",
+                    "Hardens unload, reset and Clear All cleanup."
+                }, true),
+                new ReleaseNoticeVersion("v1.0.3", "7 June 2026, 02:13 BST", new[]
+                {
+                    "Standard zebra crossings use worn, semi-transparent road-marking paint.",
+                    "Generated crossing cleanup is more reliable."
+                }, true),
+                new ReleaseNoticeVersion("v1.0.2", "4 June 2026, 13:15 BST", new[]
+                {
+                    "Road upgrades remove only crossings on the road actually replaced.",
+                    "Improves large-city placement and deletion responsiveness.",
+                    "Manual Subway routes can share an existing entrance."
+                }, true),
+                new ReleaseNoticeVersion("v1.0.1", "3 June 2026, 00:37 BST", new[]
+                {
+                    "Avoids Network Anarchy side effects and fixes junction crossing placement."
+                }, true),
+                new ReleaseNoticeVersion("v1.0.0", "29 May 2026, 14:04 BST", new[]
+                {
+                    "Initial release: place surface, signal, subway and bridge pedestrian crossings."
+                }, false)
+            });
 
         public override void OnLevelLoaded(LoadMode mode)
         {
@@ -44,6 +105,7 @@ namespace PedestrianCrossingToolkit
 
             PedestrianCrossingLog.Initialize();
             PedestrianCrossingToolkitState.Enabled = true;
+            PedestrianCrossingBulldozeHarmony.Apply();
             PedestrianCrossingScanCoordinator.Initialize();
             PedestrianCrossingPrefabCatalog.Refresh("level-loaded");
             CrossingPlacementRegistry.RebuildPlans();
@@ -55,16 +117,22 @@ namespace PedestrianCrossingToolkit
                 CrossingPathExecutionBoundary.Reset();
             PedestrianCrossingToolkitState.ScheduleBuiltStructureRebuildOnLoad();
 
+            // The Toolkit now lives entirely in Roads > Crossing and PCT Options.
+            // Release any launcher or legacy floating panel left by an earlier load.
+            PedestrianCrossingToolkitPanel.DestroyInstance();
+            PedestrianCrossingToolkitLauncherButton.DestroyInstance();
+
             UIView view = UIView.GetAView();
             if (view != null)
             {
-                PedestrianCrossingToolkitPanel.CreateIfNeeded(view);
-                PedestrianCrossingToolkitLauncherButton.CreateIfNeeded(view);
+                PedestrianCrossingRoadsTab.CreateIfNeeded(view);
                 CrossingAppliedOverlay.CreateIfNeeded(view);
                 OneTimeUpdateNoticePanel.ShowIfNeeded(view, ReleaseNotice);
             }
 
-            Debug.Log("[PedestrianCrossingToolkit] Enabled. Connector-based crossing tools loaded.");
+            PedestrianCrossingLog.UnityInfo(
+                "Enabled. Connector-based crossing tools loaded; advancedDiagnostics=" +
+                PedestrianCrossingLog.AdvancedDiagnostics + ".");
         }
 
         public override void OnLevelUnloading()
@@ -72,14 +140,18 @@ namespace PedestrianCrossingToolkit
             base.OnLevelUnloading();
 
             PedestrianCrossingScanCoordinator.Shutdown();
+            PedestrianCrossingBulldozeHarmony.Unpatch();
             PedestrianCrossingToolkitThreading.ClearMainThreadActions();
             PedestrianCrossingToolkitState.ResetForLevelUnload();
             OneTimeUpdateNoticePanel.DestroyInstance();
+            PedestrianCrossingAutoScanProgressPanel.DestroyInstance();
+            PedestrianCrossingAutoScanInstructionsPanel.DestroyInstance();
             CrossingAppliedOverlay.DestroyInstance();
+            PedestrianCrossingRoadsTab.DestroyInstance();
             PedestrianCrossingToolkitPanel.DestroyInstance();
             PedestrianCrossingToolkitLauncherButton.DestroyInstance();
 
-            Debug.Log("[PedestrianCrossingToolkit] Disabled.");
+            PedestrianCrossingLog.UnityInfo("Disabled.");
             PedestrianCrossingLog.Shutdown();
         }
     }
@@ -115,6 +187,7 @@ namespace PedestrianCrossingToolkit
             PedestrianCrossingToolkitState.ProcessDeferredLoadWork(realTimeDelta);
             PedestrianCrossingToolkitState.ProcessAutoScanObservation(realTimeDelta);
             PedestrianCrossingToolkitState.ProcessNetworkDependencyChanges(realTimeDelta);
+            PedestrianCrossingToolkitState.ProcessScheduledCrossingValidation();
             RoadPlacementRules.UpdateVanillaCrossingCache(realTimeDelta);
             CrossingPathBuilder.UpdateSignalControllers(GetSignalControllerDelta(realTimeDelta));
         }
@@ -177,12 +250,12 @@ namespace PedestrianCrossingToolkit
                 byte[] data = serializableDataManager.LoadData(DataId);
                 if (data == null || data.Length == 0)
                 {
-                    Debug.Log("[PedestrianCrossingToolkit] No saved pending crossings found.");
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] No saved pending crossings found.");
                     return;
                 }
 
                 int count = CrossingPlacementRegistry.Restore(data);
-                Debug.Log("[PedestrianCrossingToolkit] Restored pending crossings: count=" + count);
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Restored pending crossings: count=" + count);
             }
             catch (Exception e)
             {
@@ -198,7 +271,7 @@ namespace PedestrianCrossingToolkit
             {
                 byte[] data = CrossingPlacementRegistry.Serialize();
                 serializableDataManager.SaveData(DataId, data);
-                Debug.Log("[PedestrianCrossingToolkit] Saved pending crossings: count="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Saved pending crossings: count="
                           + CrossingPlacementRegistry.Count
                           + " autoRebuildBuiltStructures="
                           + CrossingPlacementRegistry.AutoRebuildBuiltStructures);

@@ -59,8 +59,8 @@ namespace PedestrianCrossingToolkit
         public const float MinExecutableAccessPathLength = 2f;
         private const float SubwayEntrancePadSurfaceLift = 0.006f;
         private const bool EnableLivePathCreation = false;
-        private static readonly CrossingPathWorkOrder[] WorkOrderBuffer = new CrossingPathWorkOrder[1024];
-        private static readonly CrossingLandingAccessAssetWorkOrder[] AccessWorkOrderBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
+        private static CrossingPathWorkOrder[] WorkOrderBuffer = new CrossingPathWorkOrder[1024];
+        private static CrossingLandingAccessAssetWorkOrder[] AccessWorkOrderBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
         private static CrossingPathExecutionSummary _lastSummary = CrossingPathExecutionSummary.Empty;
 
         public static CrossingPathExecutionSummary LastSummary
@@ -80,6 +80,7 @@ namespace PedestrianCrossingToolkit
 
         public static CrossingPathExecutionSummary Sync(string reason)
         {
+            ManagerCapacity.EnsureArrayCapacity(ref WorkOrderBuffer, CrossingPathWorkOrderPlanner.WorkOrderCount);
             int count = CrossingPathWorkOrderPlanner.CopyWorkOrdersTo(WorkOrderBuffer);
             int ready = 0;
             int skipped = 0;
@@ -107,9 +108,9 @@ namespace PedestrianCrossingToolkit
                 else
                     skipped++;
 
-                if (PedestrianCrossingLog.VerboseDiagnostics && i < logCount)
+                if (PedestrianCrossingLog.AdvancedDiagnostics && i < logCount)
                 {
-                    Debug.Log("[PedestrianCrossingToolkit] Path execution detail: reason="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Path execution detail: reason="
                               + reason
                               + " index="
                               + i
@@ -130,9 +131,9 @@ namespace PedestrianCrossingToolkit
                     skipped++;
             }
 
-            if (PedestrianCrossingLog.VerboseDiagnostics && count > logCount)
+            if (PedestrianCrossingLog.AdvancedDiagnostics && count > logCount)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Path execution detail truncated: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Path execution detail truncated: reason="
                           + reason
                           + " shown="
                           + logCount
@@ -142,7 +143,7 @@ namespace PedestrianCrossingToolkit
 
             int accessCount = ValidateAccessWorkOrders(reason, ref accessReady, ref accessSkipped);
             _lastSummary = new CrossingPathExecutionSummary(count, ready, skipped, applied, surface, signal, subway, bridge, roadEdgeLanding, accessCount, accessReady, accessSkipped);
-            Debug.Log("[PedestrianCrossingToolkit] Path execution sync: reason="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Path execution sync: reason="
                       + reason
                       + " livePaths="
                       + EnableLivePathCreation
@@ -153,6 +154,7 @@ namespace PedestrianCrossingToolkit
 
         private static int ValidateAccessWorkOrders(string reason, ref int ready, ref int skipped)
         {
+            ManagerCapacity.EnsureArrayCapacity(ref AccessWorkOrderBuffer, CrossingLandingConnectorPlanner.AccessAssetCount);
             int count = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(AccessWorkOrderBuffer);
             int logCount = Mathf.Min(count, MaxPathExecutionLogsPerRefresh);
             for (int i = 0; i < count; i++)
@@ -164,9 +166,9 @@ namespace PedestrianCrossingToolkit
                 else
                     skipped++;
 
-                if (PedestrianCrossingLog.VerboseDiagnostics && i < logCount)
+                if (PedestrianCrossingLog.AdvancedDiagnostics && i < logCount)
                 {
-                    Debug.Log("[PedestrianCrossingToolkit] Access path execution detail: reason="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Access path execution detail: reason="
                               + reason
                               + " index="
                               + i
@@ -179,9 +181,9 @@ namespace PedestrianCrossingToolkit
                 }
             }
 
-            if (PedestrianCrossingLog.VerboseDiagnostics && count > logCount)
+            if (PedestrianCrossingLog.AdvancedDiagnostics && count > logCount)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Access path execution detail truncated: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Access path execution detail truncated: reason="
                           + reason
                           + " shown="
                           + logCount

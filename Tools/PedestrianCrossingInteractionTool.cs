@@ -45,7 +45,7 @@ namespace PedestrianCrossingToolkit
         private const int ExclusionZoneCacheBuildNodeBatchSize = 512;
         private const int SignalJoinCacheBuildNodeBatchSize = 512;
         private static readonly Color SignalJoinMarkerColor = new Color(1f, 0.86f, 0.04f, 0.95f);
-        private static readonly CrossingPlacementAsset[] ExclusionZoneSignalAssetBuffer = new CrossingPlacementAsset[2048];
+        private static CrossingPlacementAsset[] ExclusionZoneSignalAssetBuffer = new CrossingPlacementAsset[2048];
         private static Texture2D _signalLampCircleTexture;
         private static Texture2D _signalGuideIconTexture;
         private static Rect _toolInfoScreenRect = default(Rect);
@@ -162,7 +162,7 @@ namespace PedestrianCrossingToolkit
             if (tool == null)
             {
                 tool = controller.gameObject.AddComponent<PedestrianCrossingInteractionTool>();
-                Debug.Log("[PedestrianCrossingToolkit] Interaction tool attached to ToolController.");
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Interaction tool attached to ToolController.");
             }
 
             return tool;
@@ -205,7 +205,7 @@ namespace PedestrianCrossingToolkit
                 if (Input.GetMouseButtonDown(0))
                 {
                     PedestrianCrossingToolkitPanel.CloseForExternalUiSelection();
-                    Debug.Log("[PedestrianCrossingToolkit] Toolkit closed: external UI selected.");
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Toolkit closed: external UI selected.");
                 }
 
                 return;
@@ -265,8 +265,10 @@ namespace PedestrianCrossingToolkit
             {
                 if (_preview.IsValid)
                 {
-                    if (PedestrianCrossingToolkitState.ActiveMode == PedestrianToolMode.RemoveCrossing)
-                        PedestrianCrossingToolkitState.ConfirmRemoval(_preview);
+                    if (PedestrianCrossingToolkitState.ActiveMode == PedestrianToolMode.InspectCrossing)
+                    {
+                        ClearPlacementBlockFeedback();
+                    }
                     else if (PedestrianCrossingToolkitState.ActiveMode == PedestrianToolMode.SubwayPointToPoint)
                     {
                         string blockedMessage;
@@ -291,7 +293,7 @@ namespace PedestrianCrossingToolkit
                 else
                 {
                     HoldPlacementBlockFeedback(_preview, _preview.Message);
-                    Debug.Log("[PedestrianCrossingToolkit] Placement click ignored: "
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Placement click ignored: "
                               + _preview.Message
                               + " mode="
                               + _preview.Mode
@@ -404,7 +406,7 @@ namespace PedestrianCrossingToolkit
             if (PedestrianCrossingToolkitState.ActiveMode != PedestrianToolMode.None)
             {
                 PedestrianCrossingToolkitPanel.CloseForExternalUiSelection();
-                Debug.Log("[PedestrianCrossingToolkit] Interaction tool disabled; toolkit closed.");
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Interaction tool disabled; toolkit closed.");
             }
         }
 
@@ -491,7 +493,7 @@ namespace PedestrianCrossingToolkit
             if (!preview.IsValid)
                 return;
 
-            if (preview.Mode == PedestrianToolMode.RemoveCrossing)
+            if (preview.Mode == PedestrianToolMode.InspectCrossing)
             {
                 _previewTouchesExisting = CrossingPlacementRegistry.TryGetAssetAt(preview, out _previewTouchedAsset);
                 _previewHoverColor = GetHoverColor(preview, _previewTouchedAsset, _previewTouchesExisting);
@@ -517,7 +519,7 @@ namespace PedestrianCrossingToolkit
                 return;
 
             CrossingPlacementRecord probe = new CrossingPlacementRecord(
-                PedestrianToolMode.RemoveCrossing,
+                PedestrianToolMode.InspectCrossing,
                 preview.SegmentId,
                 preview.SegmentPosition,
                 preview.WorldPosition,
@@ -551,7 +553,7 @@ namespace PedestrianCrossingToolkit
 
             if (IsHoldingPlacementBlockFeedback()
                 || !preview.IsValid
-                || preview.Mode != PedestrianToolMode.RemoveCrossing)
+                || preview.Mode != PedestrianToolMode.InspectCrossing)
             {
                 return;
             }
@@ -686,7 +688,7 @@ namespace PedestrianCrossingToolkit
         {
             return mode == PedestrianToolMode.SubwayLink
                    || mode == PedestrianToolMode.PedestrianBridge
-                   || mode == PedestrianToolMode.RemoveCrossing;
+                   || mode == PedestrianToolMode.InspectCrossing;
         }
 
         private static bool IsValidPlacementTarget(PedestrianToolMode mode, ushort segmentId, ref NetSegment segment)
@@ -701,7 +703,7 @@ namespace PedestrianCrossingToolkit
                     return RoadPlacementRules.AllowsManualSubwayPlacementTarget(segmentId);
             }
 
-            if (mode == PedestrianToolMode.RemoveCrossing)
+            if (mode == PedestrianToolMode.InspectCrossing)
             {
                 return segment.Info != null
                        && (segment.Info.m_netAI is RoadBaseAI
@@ -719,7 +721,7 @@ namespace PedestrianCrossingToolkit
                     return "Hover over a road, surface train track, or terrain-level metro track.";
                 case PedestrianToolMode.SubwayLink:
                     return "Hover over a road, surface/elevated train track, or terrain-level/elevated metro track.";
-                case PedestrianToolMode.RemoveCrossing:
+                case PedestrianToolMode.InspectCrossing:
                     return "Hover over an existing crossing target.";
                 default:
                     return "Hover over a road segment.";
@@ -736,7 +738,7 @@ namespace PedestrianCrossingToolkit
                     return "Selected object is not a normal surface road, surface/elevated train track, or terrain-level/elevated metro track.";
                 case PedestrianToolMode.SubwayPointToPoint:
                     return "Selected object is not a road segment.";
-                case PedestrianToolMode.RemoveCrossing:
+                case PedestrianToolMode.InspectCrossing:
                     return "Selected object is not a supported crossing target.";
                 default:
                     return "Selected object is not a road segment.";
@@ -803,8 +805,8 @@ namespace PedestrianCrossingToolkit
 
         private CrossingPlacementResult ValidatePreview(PedestrianToolMode mode, ushort segmentId, float segmentPosition, Vector3 worldPosition, bool nearNode, int slotNumber, bool isEndSegmentSlot, ushort targetNodeId)
         {
-            if (mode == PedestrianToolMode.RemoveCrossing)
-                return RemovalCrossingTool.PreviewRemoval(segmentId, segmentPosition, worldPosition, nearNode, slotNumber, isEndSegmentSlot);
+            if (mode == PedestrianToolMode.InspectCrossing)
+                return CrossingInspectionTool.PreviewInspection(segmentId, segmentPosition, worldPosition, nearNode, slotNumber, isEndSegmentSlot);
 
             if (mode == PedestrianToolMode.SubwayPointToPoint)
             {
@@ -863,7 +865,7 @@ namespace PedestrianCrossingToolkit
             if (!preview.IsValid)
                 return preview.Message;
 
-            if (preview.Mode == PedestrianToolMode.RemoveCrossing)
+            if (preview.Mode == PedestrianToolMode.InspectCrossing)
             {
                 CrossingPlacementAsset asset;
                 if (_previewTouchesExisting && _previewTouchedAsset.Id != 0)
@@ -871,7 +873,7 @@ namespace PedestrianCrossingToolkit
                 else if (!CrossingPlacementRegistry.TryGetAssetAt(preview, out asset))
                     return "No crossing at this location.";
 
-                return BuildCrossingQueryInfoText(asset, true);
+                return BuildCrossingQueryInfoText(asset);
             }
 
             if (_previewTouchesExisting)
@@ -884,12 +886,10 @@ namespace PedestrianCrossingToolkit
             if (preview.Mode == PedestrianToolMode.SubwayPointToPoint && SubwayPointToPointTool.HasStartEndpoint)
                 return "Click to place the end subway entrance.";
 
-            return "Click to " + (preview.Mode == PedestrianToolMode.RemoveCrossing
-                ? "remove crossing"
-                : "place " + PedestrianCrossingToolkitState.GetModeLabel(preview.Mode));
+            return "Click to place " + PedestrianCrossingToolkitState.GetModeLabel(preview.Mode);
         }
 
-        private static string BuildCrossingQueryInfoText(CrossingPlacementAsset asset, bool includeAction)
+        private static string BuildCrossingQueryInfoText(CrossingPlacementAsset asset)
         {
             string text = ToTitleCase(PedestrianCrossingToolkitState.GetModeLabel(asset.Placement.Mode))
                           + " #" + asset.Id
@@ -897,9 +897,6 @@ namespace PedestrianCrossingToolkit
                           + "\nSuppression: " + FormatSuppressionQueryState(asset)
                           + "\nSignal: " + FormatSignalQueryState(asset)
                           + "\nOwned assets: " + FormatOwnedAssetQueryState(asset);
-
-            if (includeAction)
-                text += "\nClick to remove.";
 
             return text;
         }
@@ -1121,6 +1118,33 @@ namespace PedestrianCrossingToolkit
             GUI.color = oldColor;
         }
 
+        internal static void DrawPassiveCrossingDetails(Rect rect, CrossingPlacementAsset asset)
+        {
+            if (asset.Id == 0)
+                return;
+
+            Color oldColor = GUI.color;
+            GUI.color = new Color(0f, 0f, 0f, 0.78f);
+            DrawSolidRect(rect);
+
+            CrossingPathBuilder.SignalControllerDebugSnapshot snapshot;
+            if (asset.Placement.Mode == PedestrianToolMode.SignalCrossing
+                && CrossingPathBuilder.TryGetSignalControllerDebugSnapshot(asset.Id, out snapshot)
+                && snapshot.IsValid)
+            {
+                DrawSignalStatusBody(new Rect(rect.x + 12f, rect.y + 12f, 33f, 51f), snapshot.VehicleState, true);
+                DrawSignalStatusBody(new Rect(rect.x + 54f, rect.y + 18f, 33f, 39f), snapshot.PedestrianState, false);
+                DrawSignalStatusText(new Rect(rect.x + 98f, rect.y + 10f, rect.width - 108f, rect.height - 18f), asset, snapshot);
+            }
+            else
+            {
+                DrawCrossingInfoAccent(new Rect(rect.x + 12f, rect.y + 12f, 34f, rect.height - 24f), asset.Placement.Mode);
+                DrawCrossingInfoText(new Rect(rect.x + 58f, rect.y + 10f, rect.width - 68f, rect.height - 18f), asset);
+            }
+
+            GUI.color = oldColor;
+        }
+
         private void DrawHoverCrossingInfo()
         {
             if (!_hasHoverCrossingInfo || !_hasToolInfoScreenRect || _hoverCrossingInfoAsset.Id == 0)
@@ -1135,9 +1159,9 @@ namespace PedestrianCrossingToolkit
             GUI.color = oldColor;
         }
 
-        private void DrawCrossingInfoAccent(Rect rect, PedestrianToolMode mode)
+        private static void DrawCrossingInfoAccent(Rect rect, PedestrianToolMode mode)
         {
-            Color accent = GetHoverColor(new CrossingPlacementRecord(mode, 0, 0f, Vector3.zero, true, string.Empty), CrossingPlacementAsset.None, false);
+            Color accent = GetCrossingInfoAccentColor(mode);
             GUI.color = new Color(0.92f, 0.96f, 1f, 0.94f);
             DrawSolidRect(rect);
             Rect inner = InsetRect(rect, 2f);
@@ -1151,7 +1175,7 @@ namespace PedestrianCrossingToolkit
             DrawSolidRect(new Rect(inner.x + 2f, inner.y + 2f, inner.width - 4f, 1f));
         }
 
-        private void DrawCrossingInfoText(Rect rect, CrossingPlacementAsset asset)
+        private static void DrawCrossingInfoText(Rect rect, CrossingPlacementAsset asset)
         {
             GUI.color = new Color(1f, 1f, 1f, 0.96f);
             GUI.Label(new Rect(rect.x, rect.y, rect.width, 18f), ToTitleCase(PedestrianCrossingToolkitState.GetModeLabel(asset.Placement.Mode)) + " #" + asset.Id);
@@ -1160,7 +1184,7 @@ namespace PedestrianCrossingToolkit
             GUI.Label(new Rect(rect.x, rect.y + 38f, rect.width, 18f), "Suppression: " + FormatSuppressionQueryState(asset));
             GUI.Label(new Rect(rect.x, rect.y + 57f, rect.width, 18f), "Signal: " + FormatSignalQueryState(asset));
             GUI.Label(new Rect(rect.x, rect.y + 76f, rect.width, 18f), "Owned assets: " + FormatOwnedAssetQueryState(asset));
-            GUI.Label(new Rect(rect.x, rect.y + 95f, rect.width, 18f), "Click to remove.");
+            GUI.Label(new Rect(rect.x, rect.y + 95f, rect.width, 18f), "Crossing tab inspection.");
         }
 
         private void DrawSignalStatusText(Rect rect)
@@ -1169,6 +1193,11 @@ namespace PedestrianCrossingToolkit
             if (asset.Id == 0)
                 CrossingPlacementRegistry.TryGetAssetById(_hoverSignalStatus.AssetId, out asset);
 
+            DrawSignalStatusText(rect, asset, _hoverSignalStatus);
+        }
+
+        private static void DrawSignalStatusText(Rect rect, CrossingPlacementAsset asset, CrossingPathBuilder.SignalControllerDebugSnapshot snapshot)
+        {
             string title = asset.Id == 0
                 ? "Signal Crossing"
                 : "Signal Crossing #" + asset.Id;
@@ -1178,15 +1207,15 @@ namespace PedestrianCrossingToolkit
             GUI.color = new Color(1f, 1f, 1f, 0.96f);
             GUI.Label(new Rect(rect.x, rect.y, rect.width, 18f), title);
             GUI.color = new Color(0.86f, 0.92f, 1f, 0.92f);
-            GUI.Label(new Rect(rect.x, rect.y + 19f, rect.width, 18f), "Signal: " + FormatSignalPhase(_hoverSignalStatus));
-            GUI.Label(new Rect(rect.x, rect.y + 38f, rect.width, 18f), "Waiting: " + (_hoverSignalStatus.HasPedestriansWaitingAtEntrance ? "yes" : "no")
-                                                                  + "  Crossing: " + (_hoverSignalStatus.HasPedestriansOnCrossing ? "yes" : "no"));
+            GUI.Label(new Rect(rect.x, rect.y + 19f, rect.width, 18f), "Signal: " + FormatSignalPhase(snapshot));
+            GUI.Label(new Rect(rect.x, rect.y + 38f, rect.width, 18f), "Waiting: " + (snapshot.HasPedestriansWaitingAtEntrance ? "yes" : "no")
+                                                                  + "  Crossing: " + (snapshot.HasPedestriansOnCrossing ? "yes" : "no"));
             GUI.Label(new Rect(rect.x, rect.y + 57f, rect.width, 18f), "Path: " + path);
             GUI.Label(new Rect(rect.x, rect.y + 76f, rect.width, 18f), "Owned assets: " + owned);
-            GUI.Label(new Rect(rect.x, rect.y + 95f, rect.width, 18f), "Click remove mode to edit.");
+            GUI.Label(new Rect(rect.x, rect.y + 95f, rect.width, 18f), "Crossing tab inspection.");
         }
 
-        private void DrawSignalStatusBody(Rect body, RoadBaseAI.TrafficLightState state, bool vehicle)
+        private static void DrawSignalStatusBody(Rect body, RoadBaseAI.TrafficLightState state, bool vehicle)
         {
             GUI.color = new Color(0.92f, 0.96f, 1f, 0.94f);
             DrawSolidRect(body);
@@ -1219,7 +1248,7 @@ namespace PedestrianCrossingToolkit
             DrawSignalStatusLamp(new Rect(pedestrianLampX, inner.y + 20f, pedestrianLampSize, pedestrianLampSize), new Color(0.18f, 0.96f, 0.32f, 1f), new Color(0.02f, 0.18f, 0.05f, 1f), pedestrianGreen);
         }
 
-        private void DrawSignalStatusLamp(Rect rect, Color activeColor, Color inactiveColor, bool active)
+        private static void DrawSignalStatusLamp(Rect rect, Color activeColor, Color inactiveColor, bool active)
         {
             DrawCircleRect(rect, new Color(0.015f, 0.018f, 0.02f, 1f));
             Rect lens = InsetRect(rect, 2f);
@@ -1234,7 +1263,7 @@ namespace PedestrianCrossingToolkit
             }
         }
 
-        private void DrawCircleRect(Rect rect, Color color)
+        private static void DrawCircleRect(Rect rect, Color color)
         {
             GUI.color = color;
             GUI.DrawTexture(rect, GetSignalLampCircleTexture());
@@ -1272,6 +1301,23 @@ namespace PedestrianCrossingToolkit
         private static Rect InsetRect(Rect rect, float inset)
         {
             return new Rect(rect.x + inset, rect.y + inset, Mathf.Max(0f, rect.width - inset * 2f), Mathf.Max(0f, rect.height - inset * 2f));
+        }
+
+        private static Color GetCrossingInfoAccentColor(PedestrianToolMode mode)
+        {
+            switch (mode)
+            {
+                case PedestrianToolMode.SignalCrossing:
+                    return new Color(1f, 0.18f, 0.12f, 0.94f);
+                case PedestrianToolMode.SubwayLink:
+                    return new Color(0.05f, 0.82f, 1f, 0.92f);
+                case PedestrianToolMode.SubwayPointToPoint:
+                    return new Color(0.62f, 0.32f, 1f, 0.92f);
+                case PedestrianToolMode.PedestrianBridge:
+                    return new Color(0.32f, 1f, 0.24f, 0.92f);
+                default:
+                    return new Color(0.48f, 0.88f, 1f, 0.88f);
+            }
         }
 
         private void DrawSignalPlacementGuide(Camera camera)
@@ -1771,6 +1817,7 @@ namespace PedestrianCrossingToolkit
         private void CollectPctSignalExclusionNodes()
         {
             _pctSignalExclusionNodes.Clear();
+            ManagerCapacity.EnsureArrayCapacity(ref ExclusionZoneSignalAssetBuffer, CrossingPlacementRegistry.Count);
             int count = CrossingPlacementRegistry.CopyTo(ExclusionZoneSignalAssetBuffer);
             for (int i = 0; i < count; i++)
             {
@@ -2511,7 +2558,7 @@ namespace PedestrianCrossingToolkit
 
         private void DrawPreviewPlacementLine(Camera camera, CrossingPlacementRecord preview, CrossingPlacementPlan plan, Color color)
         {
-            if (!preview.IsValid || preview.Mode == PedestrianToolMode.RemoveCrossing)
+            if (!preview.IsValid || preview.Mode == PedestrianToolMode.InspectCrossing)
                 return;
 
             if (!plan.IsValid)
@@ -2690,7 +2737,7 @@ namespace PedestrianCrossingToolkit
             DrawLine(start, end, width);
         }
 
-        private void DrawSolidRect(Rect rect)
+        private static void DrawSolidRect(Rect rect)
         {
             GUI.DrawTexture(rect, Texture2D.whiteTexture);
         }

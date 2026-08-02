@@ -477,7 +477,9 @@ namespace PedestrianCrossingToolkit
         private const float BridgeAccessStepMarkerDepth = 0.055f;
         private const float BridgeAccessStepMarkerHeight = 0.018f;
         private const int BridgeAccessStepMarkerInterval = 4;
-        private static readonly bool EnableBridgePathSegments = true;
+        // The hidden tunnel is the bridge's sole functional cross-road route.
+        // The elevated deck and stairs are PCT-owned visuals only.
+        private static readonly bool EnableBridgePathSegments = false;
         private static readonly bool EnableBridgeHiddenSubwayFallback = true;
         private const float SubwayEntranceVisualLength = 2.95f;
         private const float SubwayEntranceVisualWidth = 1.4f;
@@ -580,10 +582,10 @@ namespace PedestrianCrossingToolkit
         private const float SignalVehicleCrossingMovingRadius = 7.5f;
         private const float SignalVehicleMovingSpeedSqr = 0.25f;
         private const int SubwayEntranceStairCount = 8;
-        private static readonly CrossingPathWorkOrder[] BuildBuffer = new CrossingPathWorkOrder[1024];
-        private static readonly CrossingLandingConnectorWorkOrder[] ConnectorBuildBuffer = new CrossingLandingConnectorWorkOrder[2048];
-        private static readonly CrossingLandingAccessAssetWorkOrder[] AccessBuildBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
-        private static readonly CrossingPlacementAsset[] SurfaceControlAssetBuffer = new CrossingPlacementAsset[4096];
+        private static CrossingPathWorkOrder[] BuildBuffer = new CrossingPathWorkOrder[1024];
+        private static CrossingLandingConnectorWorkOrder[] ConnectorBuildBuffer = new CrossingLandingConnectorWorkOrder[2048];
+        private static CrossingLandingAccessAssetWorkOrder[] AccessBuildBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
+        private static CrossingPlacementAsset[] SurfaceControlAssetBuffer = new CrossingPlacementAsset[4096];
         private static readonly List<ushort> BuiltSegments = new List<ushort>();
         private static readonly List<ushort> BuiltNodes = new List<ushort>();
         private static readonly Dictionary<ushort, CrossingPathWorkOrderKind> BuiltSegmentKinds = new Dictionary<ushort, CrossingPathWorkOrderKind>();
@@ -614,10 +616,12 @@ namespace PedestrianCrossingToolkit
         private static Material _bridgeAccessWallMaterial;
         private static Material _bridgeAccessStructureMaterial;
         private static Material _bridgeTrimMaterial;
+        private static Material _bridgeRoofMaterial;
         private static Material _bridgeWarningStripeMaterial;
         private static Material _subwayOpeningMaterial;
         private static Material _subwayEntranceWallMaterial;
         private static Material _subwayEntranceCanopyMaterial;
+        private static Material _subwayEntranceRoofMaterial;
         private static Material _subwayEntranceTileMaterial;
         private static Material _subwayEntranceSignMaterial;
         private static Material _subwayStepNoseMaterial;
@@ -928,6 +932,8 @@ namespace PedestrianCrossingToolkit
                 return 0;
 
             RemoveUnityVisualsForAssets(assetIds, assetCount);
+            EnsureBuildBufferCapacity();
+            int accessOrderCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(AccessBuildBuffer);
             int pathOrderCount = CrossingPathWorkOrderPlanner.CopyWorkOrdersTo(BuildBuffer);
             int pathOrderMax = Mathf.Min(pathOrderCount, BuildBuffer.Length);
             for (int i = 0; i < pathOrderMax; i++)
@@ -967,7 +973,6 @@ namespace PedestrianCrossingToolkit
 
             }
 
-            int accessOrderCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(AccessBuildBuffer);
             int accessOrderMax = Mathf.Min(accessOrderCount, AccessBuildBuffer.Length);
             for (int i = 0; i < accessOrderMax; i++)
             {
@@ -976,7 +981,8 @@ namespace PedestrianCrossingToolkit
                     continue;
 
                 NetInfo prefab = GetAccessPathPrefab(order);
-                if (!ShouldBuildAccess(order, prefab))
+                bool isBridgeAccess = order.AssetKind == CrossingLandingAccessAssetKind.BridgeStairRampLanding;
+                if (!isBridgeAccess && !ShouldBuildAccess(order, prefab))
                     continue;
 
                 AddAccessVisual(order);
@@ -1052,6 +1058,7 @@ namespace PedestrianCrossingToolkit
                 ClearBuiltVisualObjects();
 
             PendingSignalControlOrders.Clear();
+            EnsureBuildBufferCapacity();
             int accessCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(AccessBuildBuffer);
             int connectorCount = CrossingLandingConnectorPlanner.CopyWorkOrdersTo(ConnectorBuildBuffer);
             if (!_batchBuildActive)
@@ -1128,7 +1135,7 @@ namespace PedestrianCrossingToolkit
                     ApplyBuiltSurfaceCrossingControl(order);
                     QueueBuiltSignalControl(order);
                     skipped++;
-                    Debug.Log("[PedestrianCrossingToolkit] Connector path already exists: asset="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connector path already exists: asset="
                               + order.AssetId
                               + " kind="
                               + order.Kind
@@ -1158,7 +1165,7 @@ namespace PedestrianCrossingToolkit
                 if (errors != ToolBase.ToolErrors.None || segment == 0)
                 {
                     skipped++;
-                    Debug.Log("[PedestrianCrossingToolkit] Connector path build skipped: asset="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connector path build skipped: asset="
                               + order.AssetId
                               + " kind="
                               + order.Kind
@@ -1186,7 +1193,7 @@ namespace PedestrianCrossingToolkit
                 ApplyBuiltSurfaceCrossingControl(order);
                 QueueBuiltSignalControl(order);
                 built++;
-                Debug.Log("[PedestrianCrossingToolkit] Connector path built: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connector path built: asset="
                           + order.AssetId
                           + " kind="
                           + order.Kind
@@ -1217,7 +1224,7 @@ namespace PedestrianCrossingToolkit
                 if (IsBridgeLandingConnector(order))
                 {
                     skipped++;
-                    Debug.Log("[PedestrianCrossingToolkit] Bridge landing connector skipped: asset="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge landing connector skipped: asset="
                               + order.AssetId
                               + " endpoint="
                               + order.EndpointName
@@ -1239,7 +1246,7 @@ namespace PedestrianCrossingToolkit
                 if (connectorKeys.Contains(connectorKey))
                 {
                     skipped++;
-                    Debug.Log("[PedestrianCrossingToolkit] Landing connector duplicate skipped: asset="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing connector duplicate skipped: asset="
                               + order.AssetId
                               + " endpoint="
                               + order.EndpointName
@@ -1266,7 +1273,7 @@ namespace PedestrianCrossingToolkit
                     AddTerminalNode(GetNearestSegmentNode(segment, connectorTo), GetConnectorSegmentKind(order));
                     connectorKeys.Add(connectorKey);
                     skipped++;
-                    Debug.Log("[PedestrianCrossingToolkit] Landing connector already exists: asset="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing connector already exists: asset="
                               + order.AssetId
                               + " endpoint="
                               + order.EndpointName
@@ -1283,7 +1290,7 @@ namespace PedestrianCrossingToolkit
                 if (errors != ToolBase.ToolErrors.None || segment == 0)
                 {
                     skipped++;
-                    Debug.Log("[PedestrianCrossingToolkit] Landing connector build skipped: asset="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing connector build skipped: asset="
                               + order.AssetId
                               + " endpoint="
                               + order.EndpointName
@@ -1306,7 +1313,7 @@ namespace PedestrianCrossingToolkit
                 connectorKeys.Add(connectorKey);
                 built++;
                 connectorBuilt++;
-                Debug.Log("[PedestrianCrossingToolkit] Landing connector built: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Landing connector built: asset="
                           + order.AssetId
                           + " endpoint="
                           + order.EndpointName
@@ -1335,6 +1342,7 @@ namespace PedestrianCrossingToolkit
                     continue;
 
                 _activeBuildAssetId = order.AssetId;
+                bool isBridgeAccess = order.AssetKind == CrossingLandingAccessAssetKind.BridgeStairRampLanding;
                 NetInfo prefab = GetAccessPathPrefab(order);
                 float deckElevation = GetAccessDeckElevation(order);
                 ushort firstNode;
@@ -1349,21 +1357,33 @@ namespace PedestrianCrossingToolkit
                     TryGetBuiltPathAnchorNode(order.Position, out groundNodeId);
                 if (order.AssetKind == CrossingLandingAccessAssetKind.SubwayEntrance && groundNodeId == deckNodeId)
                     groundNodeId = 0;
-                if (order.AssetKind == CrossingLandingAccessAssetKind.BridgeStairRampLanding)
+                if (isBridgeAccess)
                 {
                     bool nonRoadBridgeAccess = RoadPlacementRules.IsNonRoadGradeSeparatedPlacementTarget(order.SegmentId);
+                    // The hidden bridge route owns functional connectivity. The planned
+                    // stair/ramp visual is not conditional on a second, redundant
+                    // invisible deck-to-foot connector being executable or newly built.
+                    AddAccessVisual(order);
                     if (!ShouldBuildAccess(order, prefab))
                     {
+                        built++;
+                        accessBuilt++;
                         skipped++;
+                        PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge access path skipped: asset="
+                                  + order.AssetId
+                                  + " endpoint="
+                                  + order.EndpointName
+                                  + " access="
+                                  + order.AccessKind
+                                  + " reason=visible-access-preserved-by-hidden-route");
                         continue;
                     }
 
                     if (nonRoadBridgeAccess || !EnableBridgePathSegments)
                     {
-                        AddAccessVisual(order);
                         built++;
                         accessBuilt++;
-                        Debug.Log("[PedestrianCrossingToolkit] Bridge access path skipped: asset="
+                        PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge access path skipped: asset="
                                   + order.AssetId
                                   + " endpoint="
                                   + order.EndpointName
@@ -1404,9 +1424,10 @@ namespace PedestrianCrossingToolkit
                         accessBuilt += snapStubBuilt;
                     }
 
-                    AddAccessVisual(order);
+                    if (!isBridgeAccess)
+                        AddAccessVisual(order);
                     skipped++;
-                    Debug.Log("[PedestrianCrossingToolkit] Access connector already exists: asset="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Access connector already exists: asset="
                               + order.AssetId
                               + " endpoint="
                               + order.EndpointName
@@ -1425,8 +1446,14 @@ namespace PedestrianCrossingToolkit
                     : CreatePath(prefab, order.DeckPosition, groundPosition, deckElevation, 0f, deckNodeId, groundNodeId, out firstNode, out lastNode, out segment);
                 if (errors != ToolBase.ToolErrors.None || segment == 0)
                 {
+                    if (isBridgeAccess)
+                    {
+                        built++;
+                        accessBuilt++;
+                    }
+
                     skipped++;
-                    Debug.Log("[PedestrianCrossingToolkit] Access connector build skipped: asset="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Access connector build skipped: asset="
                               + order.AssetId
                               + " endpoint="
                               + order.EndpointName
@@ -1435,7 +1462,8 @@ namespace PedestrianCrossingToolkit
                               + " errors="
                               + errors
                               + " prefab="
-                              + (prefab == null ? "none" : prefab.name));
+                              + (prefab == null ? "none" : prefab.name)
+                              + (isBridgeAccess ? " visibleAccess=preserved-by-hidden-route" : string.Empty));
                     continue;
                 }
 
@@ -1453,10 +1481,11 @@ namespace PedestrianCrossingToolkit
                     accessBuilt += snapStubBuilt;
                 }
 
-                AddAccessVisual(order);
+                if (!isBridgeAccess)
+                    AddAccessVisual(order);
                 built++;
                 accessBuilt++;
-                Debug.Log("[PedestrianCrossingToolkit] Access connector built: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Access connector built: asset="
                           + order.AssetId
                           + " endpoint="
                           + order.EndpointName
@@ -1480,7 +1509,7 @@ namespace PedestrianCrossingToolkit
             if (!filteredBuild && !_batchBuildActive)
                 _lastValidationSummary = ValidateBuiltConnectors();
 
-            Debug.Log("[PedestrianCrossingToolkit] Connector path build complete: built=" + built + " connectors=" + connectorBuilt + " access=" + accessBuilt + " skipped=" + skipped + " validation=" + _lastValidationSummary.ToLogString());
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connector path build complete: built=" + built + " connectors=" + connectorBuilt + " access=" + accessBuilt + " skipped=" + skipped + " validation=" + _lastValidationSummary.ToLogString());
             _activeBuildAssetId = 0;
             return built;
         }
@@ -1517,7 +1546,7 @@ namespace PedestrianCrossingToolkit
                     AddBridgeSupportPillar(order, order.SecondPosition);
                 }
 
-                Debug.Log("[PedestrianCrossingToolkit] Bridge deck path skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge deck path skipped: asset="
                           + order.AssetId
                           + " segment="
                           + order.SegmentId
@@ -1551,7 +1580,7 @@ namespace PedestrianCrossingToolkit
                     AddBridgeSupportPillar(order, order.SecondPosition);
                 }
 
-                Debug.Log("[PedestrianCrossingToolkit] Bridge deck already exists: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge deck already exists: asset="
                           + order.AssetId
                           + " segment="
                           + order.SegmentId
@@ -1573,7 +1602,7 @@ namespace PedestrianCrossingToolkit
                 out segment);
             if (errors != ToolBase.ToolErrors.None || segment == 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge deck build skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge deck build skipped: asset="
                           + order.AssetId
                           + " segment="
                           + order.SegmentId
@@ -1597,7 +1626,7 @@ namespace PedestrianCrossingToolkit
                 AddBridgeConcrete(order.AssetId, GetDeckOverhangStart(order.FirstPosition, order.SecondPosition), GetDeckOverhangEnd(order.FirstPosition, order.SecondPosition), BridgeDeckVisualWidth, CrossingVerticalProfile.BridgeDeckHeight, CrossingVerticalProfile.BridgeDeckHeight, BridgeConcreteThickness, "deck");
                 AddBridgeSupportPillar(order, order.FirstPosition);
                 AddBridgeSupportPillar(order, order.SecondPosition);
-                Debug.Log("[PedestrianCrossingToolkit] Bridge deck built: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge deck built: asset="
                           + order.AssetId
                       + " segment="
                       + order.SegmentId
@@ -1629,7 +1658,7 @@ namespace PedestrianCrossingToolkit
             BridgeFunctionalPadPoint secondPad;
             if (!TryGetBridgeFunctionalPadPoints(order.AssetId, accessCount, connectorCount, out firstPad, out secondPad))
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge hidden tunnel skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden tunnel skipped: asset="
                           + order.AssetId
                           + " segment="
                           + order.SegmentId
@@ -1639,7 +1668,7 @@ namespace PedestrianCrossingToolkit
 
             if (!firstPad.HasLaneTarget || !secondPad.HasLaneTarget)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge hidden tunnel skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden tunnel skipped: asset="
                           + order.AssetId
                           + " segment="
                           + order.SegmentId
@@ -1651,6 +1680,8 @@ namespace PedestrianCrossingToolkit
                 return 0;
             }
 
+            ReleaseLegacyBridgeTunnelGeometry(order, firstPad, secondPad, accessCount);
+
             ushort firstNode;
             ushort lastNode;
             ushort segment;
@@ -1659,22 +1690,21 @@ namespace PedestrianCrossingToolkit
             if (!TryBuildBridgeHiddenRun(order, firstPad, secondPad, out prefab, out firstNode, out lastNode, out segment, out built))
                 return 0;
 
-            string prefabName = prefab.name;
             ushort firstGroundNode;
             ushort secondGroundNode;
             built += BuildBridgeHiddenFootConnector(order.AssetId, "A", firstPad, out firstGroundNode);
             built += BuildBridgeHiddenFootConnector(order.AssetId, "B", secondPad, out secondGroundNode);
-            built += BuildBridgeHiddenEntrance(order.AssetId, "A", prefab, prefabName, firstPad.HiddenPosition, firstNode, firstGroundNode);
-            built += BuildBridgeHiddenEntrance(order.AssetId, "B", prefab, prefabName, secondPad.HiddenPosition, lastNode, secondGroundNode);
+            built += BuildBridgeHiddenEntrance(order.AssetId, "A", prefab, firstPad.HiddenPosition, firstNode, firstGroundNode);
+            built += BuildBridgeHiddenEntrance(order.AssetId, "B", prefab, secondPad.HiddenPosition, lastNode, secondGroundNode);
 
-            Debug.Log("[PedestrianCrossingToolkit] Bridge hidden tunnel built: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden tunnel built: asset="
                       + order.AssetId
                       + " segment="
                       + order.SegmentId
                       + " builtSegment="
                       + segment
                       + " prefab="
-                      + prefabName
+                      + prefab.name
                       + " from="
                       + firstPad.HiddenPosition
                       + " to="
@@ -1693,13 +1723,15 @@ namespace PedestrianCrossingToolkit
             BridgeFunctionalPadPoint secondPad;
             if (!TryGetBridgeFunctionalPadPoints(order.AssetId, accessCount, 0, out firstPad, out secondPad))
             {
-                Debug.Log("[PedestrianCrossingToolkit] Non-road bridge hidden subway skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Non-road bridge hidden subway skipped: asset="
                           + order.AssetId
                           + " segment="
                           + order.SegmentId
                           + " reason=missing-stair-foot-pads");
                 return 0;
             }
+
+            ReleaseLegacyBridgeTunnelGeometry(order, firstPad, secondPad, accessCount);
 
             ushort firstNode;
             ushort lastNode;
@@ -1709,18 +1741,17 @@ namespace PedestrianCrossingToolkit
             if (!TryBuildBridgeHiddenRun(order, firstPad, secondPad, out prefab, out firstNode, out lastNode, out segment, out built))
                 return 0;
 
-            string prefabName = prefab.name;
-            built += BuildNonRoadBridgeHiddenEntrance(order.AssetId, "A", prefab, prefabName, firstPad.HiddenPosition, firstNode);
-            built += BuildNonRoadBridgeHiddenEntrance(order.AssetId, "B", prefab, prefabName, secondPad.HiddenPosition, lastNode);
+            built += BuildNonRoadBridgeHiddenEntrance(order.AssetId, "A", prefab, firstPad.HiddenPosition, firstNode);
+            built += BuildNonRoadBridgeHiddenEntrance(order.AssetId, "B", prefab, secondPad.HiddenPosition, lastNode);
 
-            Debug.Log("[PedestrianCrossingToolkit] Non-road bridge hidden subway built: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Non-road bridge hidden subway built: asset="
                       + order.AssetId
                       + " segment="
                       + order.SegmentId
                       + " builtSegment="
                       + segment
                       + " prefab="
-                      + prefabName
+                      + prefab.name
                       + " from="
                       + firstPad.HiddenPosition
                       + " to="
@@ -1750,7 +1781,7 @@ namespace PedestrianCrossingToolkit
                 lastNode = GetNearestSegmentNode(segment, secondBuildPosition);
                 RegisterBuiltPathAnchorNode(firstBuildPosition, firstNode);
                 RegisterBuiltPathAnchorNode(secondBuildPosition, lastNode);
-                Debug.Log("[PedestrianCrossingToolkit] Bridge hidden tunnel already exists: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden tunnel already exists: asset="
                           + order.AssetId
                           + " segment="
                           + order.SegmentId
@@ -1777,7 +1808,7 @@ namespace PedestrianCrossingToolkit
                         lastNode = GetNearestSegmentNode(segment, secondBuildPosition);
                         RegisterBuiltPathAnchorNode(firstBuildPosition, firstNode);
                         RegisterBuiltPathAnchorNode(secondBuildPosition, lastNode);
-                        Debug.Log("[PedestrianCrossingToolkit] Bridge hidden tunnel already exists: asset="
+                        PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden tunnel already exists: asset="
                                   + order.AssetId
                                   + " segment="
                                   + order.SegmentId
@@ -1794,7 +1825,7 @@ namespace PedestrianCrossingToolkit
 
             if (errors != ToolBase.ToolErrors.None || segment == 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge hidden tunnel build skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden tunnel build skipped: asset="
                           + order.AssetId
                           + " segment="
                           + order.SegmentId
@@ -1824,12 +1855,128 @@ namespace PedestrianCrossingToolkit
                    ?? order.Prefab;
         }
 
+        private static NetInfo GetBridgeHiddenTransitionPrefab(NetInfo tunnelPrefab)
+        {
+            return PedestrianCrossingPrefabCatalog.InvisibleBridgePathPrefab
+                   ?? PedestrianCrossingPrefabCatalog.SurfaceCrossingPathPrefab
+                   ?? PedestrianCrossingPrefabCatalog.PedestrianPathPrefab
+                   ?? tunnelPrefab;
+        }
+
+        private static void ReleaseLegacyBridgeTunnelGeometry(
+            CrossingPathWorkOrder order,
+            BridgeFunctionalPadPoint firstPad,
+            BridgeFunctionalPadPoint secondPad,
+            int accessCount)
+        {
+            NetInfo tunnelPrefab = PedestrianCrossingPrefabCatalog.PedestrianTunnelPrefab;
+            int released = 0;
+            NetInfo surfaceConnectionPrefab = PedestrianCrossingPrefabCatalog.InvisibleBridgePathPrefab;
+            released += ReleaseLegacyBridgePathPair(
+                surfaceConnectionPrefab,
+                order.FirstBuildPosition,
+                order.SecondBuildPosition);
+            released += ReleaseLegacyBridgePathPair(
+                tunnelPrefab,
+                order.FirstBuildPosition,
+                order.SecondBuildPosition);
+            released += ReleaseLegacyBridgePathPair(
+                tunnelPrefab,
+                firstPad.HiddenPosition + Vector3.up * BridgeHiddenTunnelDepth,
+                firstPad.HiddenPosition);
+            released += ReleaseLegacyBridgePathPair(
+                tunnelPrefab,
+                secondPad.HiddenPosition + Vector3.up * BridgeHiddenTunnelDepth,
+                secondPad.HiddenPosition);
+
+            int max = Mathf.Min(accessCount, AccessBuildBuffer.Length);
+            for (int i = 0; i < max; i++)
+            {
+                CrossingLandingAccessAssetWorkOrder access = AccessBuildBuffer[i];
+                if (access.AssetId != order.AssetId
+                    || access.AssetKind != CrossingLandingAccessAssetKind.BridgeStairRampLanding)
+                {
+                    continue;
+                }
+
+                released += ReleaseLegacyBridgePathPair(
+                    tunnelPrefab,
+                    access.DeckPosition + Vector3.up * GetAccessDeckElevation(access),
+                    GetAccessGroundPosition(access));
+            }
+
+            if (released > 0)
+            {
+                PedestrianCrossingLog.Advanced(
+                    "[PedestrianCrossingToolkit] Released legacy redundant bridge route geometry: asset="
+                    + order.AssetId
+                    + " segment="
+                    + order.SegmentId
+                    + " released="
+                    + released);
+            }
+        }
+
+        private static int ReleaseLegacyBridgePathPair(
+            NetInfo pathPrefab,
+            Vector3 expectedStart,
+            Vector3 expectedEnd)
+        {
+            NetManager netManager = NetManager.instance;
+            List<ushort> candidates;
+            if (netManager == null
+                || pathPrefab == null
+                || !ManagedSegmentsByPrefab.TryGetValue(pathPrefab, out candidates))
+            {
+                return 0;
+            }
+
+            for (int i = candidates.Count - 1; i >= 0; i--)
+            {
+                ushort segmentId = candidates[i];
+                if (segmentId == 0 || segmentId >= netManager.m_segments.m_size)
+                    continue;
+
+                ref NetSegment segment = ref netManager.m_segments.m_buffer[segmentId];
+                if ((segment.m_flags & NetSegment.Flags.Created) == 0
+                    || segment.Info != pathPrefab
+                    || segment.m_startNode == 0
+                    || segment.m_endNode == 0
+                    || segment.m_startNode >= netManager.m_nodes.m_size
+                    || segment.m_endNode >= netManager.m_nodes.m_size)
+                {
+                    continue;
+                }
+
+                Vector3 start = netManager.m_nodes.m_buffer[segment.m_startNode].m_position;
+                Vector3 end = netManager.m_nodes.m_buffer[segment.m_endNode].m_position;
+                bool same = IsNearTerrainSensitivePoint(start, expectedStart)
+                            && IsNearTerrainSensitivePoint(end, expectedEnd);
+                bool opposite = IsNearTerrainSensitivePoint(start, expectedEnd)
+                                && IsNearTerrainSensitivePoint(end, expectedStart);
+                if (!same && !opposite)
+                    continue;
+
+                if (!ReleaseSegmentAndUnusedNodes(netManager, segmentId))
+                    return 0;
+
+                candidates.RemoveAt(i);
+                BuiltSegments.Remove(segmentId);
+                BuiltSegmentAssets.Remove(segmentId);
+                BuiltSegmentKinds.Remove(segmentId);
+                BuiltBridgeFallbackSegments.Remove(segmentId);
+                return 1;
+            }
+
+            return 0;
+        }
+
         private static int BuildBridgeHiddenFootConnector(int assetId, string endpointName, BridgeFunctionalPadPoint pad, out ushort hiddenGroundNodeId)
         {
             hiddenGroundNodeId = 0;
             if (!pad.HasLaneTarget)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge hidden foot connector skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden foot connector skipped: asset="
                           + assetId
                           + " endpoint="
                           + endpointName
@@ -1860,7 +2007,7 @@ namespace PedestrianCrossingToolkit
                 RegisterBuiltPathAnchorNode(pad.HiddenPosition, hiddenNode);
                 RegisterBuiltPathAnchorNode(pad.LaneTargetPosition, laneNode);
                 AddTerminalNode(laneNode, CrossingPathWorkOrderKind.BridgePath);
-                Debug.Log("[PedestrianCrossingToolkit] Bridge hidden foot connector already exists: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden foot connector already exists: asset="
                           + assetId
                           + " endpoint="
                           + endpointName
@@ -1878,7 +2025,7 @@ namespace PedestrianCrossingToolkit
             ToolBase.ToolErrors errors = CreatePath(prefab, pad.HiddenPosition, pad.LaneTargetPosition, 0f, 0f, out firstNode, out lastNode, out segment);
             if (errors != ToolBase.ToolErrors.None || segment == 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge hidden foot connector build skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden foot connector build skipped: asset="
                           + assetId
                           + " endpoint="
                           + endpointName
@@ -1902,7 +2049,7 @@ namespace PedestrianCrossingToolkit
             RegisterBuiltPathAnchorNode(pad.LaneTargetPosition, lastNode);
             AddTerminalNode(lastNode, CrossingPathWorkOrderKind.BridgePath);
             hiddenGroundNodeId = firstNode;
-            Debug.Log("[PedestrianCrossingToolkit] Bridge hidden foot connector built: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden foot connector built: asset="
                       + assetId
                       + " endpoint="
                       + endpointName
@@ -1921,11 +2068,12 @@ namespace PedestrianCrossingToolkit
             return 1;
         }
 
-        private static int BuildBridgeHiddenEntrance(int assetId, string endpointName, NetInfo prefab, string prefabName, Vector3 position, ushort tunnelNodeId, ushort groundNodeId)
+        private static int BuildBridgeHiddenEntrance(int assetId, string endpointName, NetInfo prefab, Vector3 position, ushort tunnelNodeId, ushort groundNodeId)
         {
-            if (prefab == null || tunnelNodeId == 0 || groundNodeId == 0)
+            NetInfo transitionPrefab = GetBridgeHiddenTransitionPrefab(prefab);
+            if (transitionPrefab == null || tunnelNodeId == 0 || groundNodeId == 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge hidden entrance skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden entrance skipped: asset="
                           + assetId
                           + " endpoint="
                           + endpointName
@@ -1941,7 +2089,7 @@ namespace PedestrianCrossingToolkit
             ushort lastNode;
             ushort segment;
             Vector3 hiddenBuildPosition = position + Vector3.up * BridgeHiddenTunnelDepth;
-            if (TryFindMatchingManagedSegment(prefab, hiddenBuildPosition, position, out segment))
+            if (TryFindMatchingManagedSegment(transitionPrefab, hiddenBuildPosition, position, out segment))
             {
                 AddSegment(segment);
                 BuiltSegmentKinds[segment] = CrossingPathWorkOrderKind.BridgePath;
@@ -1950,14 +2098,14 @@ namespace PedestrianCrossingToolkit
                 ushort groundNode = GetNearestSegmentNode(segment, position);
                 RegisterBuiltPathAnchorNode(hiddenBuildPosition, hiddenNode);
                 RegisterBuiltPathAnchorNode(position, groundNode);
-                Debug.Log("[PedestrianCrossingToolkit] Bridge hidden entrance already exists: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden entrance already exists: asset="
                           + assetId
                           + " endpoint="
                           + endpointName
                           + " segment="
                           + segment
                           + " prefab="
-                          + prefabName
+                          + transitionPrefab.name
                           + " hidden="
                           + hiddenBuildPosition
                           + " ground="
@@ -1965,17 +2113,17 @@ namespace PedestrianCrossingToolkit
                 return 0;
             }
 
-            ToolBase.ToolErrors errors = CreateExactPath(prefab, position, position, BridgeHiddenTunnelDepth, 0f, Vector3.forward, tunnelNodeId, groundNodeId, out firstNode, out lastNode, out segment);
+            ToolBase.ToolErrors errors = CreateExactPath(transitionPrefab, position, position, BridgeHiddenTunnelDepth, 0f, Vector3.forward, tunnelNodeId, groundNodeId, out firstNode, out lastNode, out segment);
             if (errors != ToolBase.ToolErrors.None || segment == 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge hidden entrance build skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden entrance build skipped: asset="
                           + assetId
                           + " endpoint="
                           + endpointName
                           + " errors="
                           + errors
                           + " prefab="
-                          + prefabName
+                          + transitionPrefab.name
                           + " hidden="
                           + hiddenBuildPosition
                           + " ground="
@@ -1990,7 +2138,7 @@ namespace PedestrianCrossingToolkit
             AddNode(lastNode);
             RegisterBuiltPathAnchorNode(hiddenBuildPosition, firstNode);
             RegisterBuiltPathAnchorNode(position, lastNode);
-            Debug.Log("[PedestrianCrossingToolkit] Bridge hidden entrance built: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge hidden entrance built: asset="
                       + assetId
                       + " endpoint="
                       + endpointName
@@ -2001,7 +2149,7 @@ namespace PedestrianCrossingToolkit
                       + " lastNode="
                       + lastNode
                       + " prefab="
-                      + prefabName
+                      + transitionPrefab.name
                       + " hidden="
                       + hiddenBuildPosition
                       + " ground="
@@ -2009,11 +2157,12 @@ namespace PedestrianCrossingToolkit
             return 1;
         }
 
-        private static int BuildNonRoadBridgeHiddenEntrance(int assetId, string endpointName, NetInfo prefab, string prefabName, Vector3 position, ushort tunnelNodeId)
+        private static int BuildNonRoadBridgeHiddenEntrance(int assetId, string endpointName, NetInfo prefab, Vector3 position, ushort tunnelNodeId)
         {
-            if (prefab == null || tunnelNodeId == 0)
+            NetInfo transitionPrefab = GetBridgeHiddenTransitionPrefab(prefab);
+            if (transitionPrefab == null || tunnelNodeId == 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Non-road bridge hidden entrance skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Non-road bridge hidden entrance skipped: asset="
                           + assetId
                           + " endpoint="
                           + endpointName
@@ -2027,7 +2176,7 @@ namespace PedestrianCrossingToolkit
             ushort lastNode;
             ushort segment;
             Vector3 hiddenBuildPosition = position + Vector3.up * BridgeHiddenTunnelDepth;
-            if (TryFindMatchingManagedSegment(prefab, hiddenBuildPosition, position, out segment))
+            if (TryFindMatchingManagedSegment(transitionPrefab, hiddenBuildPosition, position, out segment))
             {
                 AddSegment(segment);
                 BuiltSegmentKinds[segment] = CrossingPathWorkOrderKind.BridgePath;
@@ -2036,14 +2185,14 @@ namespace PedestrianCrossingToolkit
                 ushort groundNode = GetNearestSegmentNode(segment, position);
                 RegisterBuiltPathAnchorNode(hiddenBuildPosition, hiddenNode);
                 RegisterBuiltPathAnchorNode(position, groundNode);
-                Debug.Log("[PedestrianCrossingToolkit] Non-road bridge hidden entrance already exists: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Non-road bridge hidden entrance already exists: asset="
                           + assetId
                           + " endpoint="
                           + endpointName
                           + " segment="
                           + segment
                           + " prefab="
-                          + prefabName
+                          + transitionPrefab.name
                           + " hidden="
                           + hiddenBuildPosition
                           + " ground="
@@ -2051,17 +2200,17 @@ namespace PedestrianCrossingToolkit
                 return 0;
             }
 
-            ToolBase.ToolErrors errors = CreateExactPath(prefab, position, position, BridgeHiddenTunnelDepth, 0f, Vector3.forward, tunnelNodeId, 0, out firstNode, out lastNode, out segment);
+            ToolBase.ToolErrors errors = CreateExactPath(transitionPrefab, position, position, BridgeHiddenTunnelDepth, 0f, Vector3.forward, tunnelNodeId, 0, out firstNode, out lastNode, out segment);
             if (errors != ToolBase.ToolErrors.None || segment == 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Non-road bridge hidden entrance build skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Non-road bridge hidden entrance build skipped: asset="
                           + assetId
                           + " endpoint="
                           + endpointName
                           + " errors="
                           + errors
                           + " prefab="
-                          + prefabName
+                          + transitionPrefab.name
                           + " hidden="
                           + hiddenBuildPosition
                           + " ground="
@@ -2076,7 +2225,7 @@ namespace PedestrianCrossingToolkit
             AddNode(lastNode);
             RegisterBuiltPathAnchorNode(hiddenBuildPosition, firstNode);
             RegisterBuiltPathAnchorNode(position, lastNode);
-            Debug.Log("[PedestrianCrossingToolkit] Non-road bridge hidden entrance built: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Non-road bridge hidden entrance built: asset="
                       + assetId
                       + " endpoint="
                       + endpointName
@@ -2087,7 +2236,7 @@ namespace PedestrianCrossingToolkit
                       + " lastNode="
                       + lastNode
                       + " prefab="
-                      + prefabName
+                      + transitionPrefab.name
                       + " hidden="
                       + hiddenBuildPosition
                       + " ground="
@@ -2265,7 +2414,7 @@ namespace PedestrianCrossingToolkit
                 ClearBuiltPathTracking(false);
             }
 
-            Debug.Log("[PedestrianCrossingToolkit] Connector path clear: reason=" + reason + " removed=" + removed);
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connector path clear: reason=" + reason + " removed=" + removed);
             return removed;
         }
 
@@ -2278,7 +2427,7 @@ namespace PedestrianCrossingToolkit
             int tracked = trackedSegments + trackedNodes;
             if (tracked > 0 || trackedVisuals > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Connector path unload state forgotten without NetManager release: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connector path unload state forgotten without NetManager release: reason="
                           + reason
                           + " segments="
                           + trackedSegments
@@ -2335,7 +2484,7 @@ namespace PedestrianCrossingToolkit
                 removed++;
             }
 
-            Debug.Log("[PedestrianCrossingToolkit] Removed built paths for asset: reason="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Removed built paths for asset: reason="
                       + reason
                       + " asset="
                       + assetId
@@ -2357,7 +2506,7 @@ namespace PedestrianCrossingToolkit
             bool normalizedJoin = ClearSignalRoadStateForAssetJoin(asset, reason, out nodeId, out segmentEndCount);
             if (normalizedJoin || segmentEndCount > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Normalized signal road join: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Normalized signal road join: reason="
                           + reason
                           + " asset="
                           + asset.Id
@@ -2372,7 +2521,7 @@ namespace PedestrianCrossingToolkit
             if (restoredSnapshot || normalizedJoin)
                 return 1;
 
-            Debug.Log("[PedestrianCrossingToolkit] Signal road state restore skipped: reason="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Signal road state restore skipped: reason="
                       + reason
                       + " asset="
                       + asset.Id
@@ -2521,7 +2670,7 @@ namespace PedestrianCrossingToolkit
 
             if (removedControllers > 0 || removedOrders > 0 || removedRestores > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Removed signal controller for asset: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Removed signal controller for asset: reason="
                           + reason
                           + " asset="
                           + assetId
@@ -3095,7 +3244,7 @@ namespace PedestrianCrossingToolkit
                     continue;
 
                 ReleaseSegmentAndUnusedNodes(netManager, segmentId);
-                Debug.Log("[PedestrianCrossingToolkit] Released stale subway landing connector: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Released stale subway landing connector: asset="
                           + order.AssetId
                           + " endpoint="
                           + order.EndpointName
@@ -3245,7 +3394,7 @@ namespace PedestrianCrossingToolkit
             NetInfo prefab = PedestrianCrossingPrefabCatalog.InvisibleBridgePathPrefab;
             if (prefab == null)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Subway entrance snap stub skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Subway entrance snap stub skipped: asset="
                           + order.AssetId
                           + " endpoint="
                           + order.EndpointName
@@ -3256,7 +3405,7 @@ namespace PedestrianCrossingToolkit
             Vector3 snapEnd = GetSubwayEntranceSnapStubEndPosition(order, groundPosition);
             if (HorizontalDistance(groundPosition, snapEnd) < SubwayEntranceSnapStubMinLength)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Subway entrance snap stub skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Subway entrance snap stub skipped: asset="
                           + order.AssetId
                           + " endpoint="
                           + order.EndpointName
@@ -3275,7 +3424,7 @@ namespace PedestrianCrossingToolkit
                 BuiltSegmentKinds[segment] = CrossingPathWorkOrderKind.SubwayPath;
                 RegisterBuiltPathAnchorNode(groundPosition, GetNearestSegmentNode(segment, groundPosition));
                 RegisterBuiltPathAnchorNode(snapEnd, GetNearestSegmentNode(segment, snapEnd));
-                Debug.Log("[PedestrianCrossingToolkit] Subway entrance snap stub already exists: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Subway entrance snap stub already exists: asset="
                           + order.AssetId
                           + " endpoint="
                           + order.EndpointName
@@ -3306,7 +3455,7 @@ namespace PedestrianCrossingToolkit
                 out segment);
             if (errors != ToolBase.ToolErrors.None || segment == 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Subway entrance snap stub build skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Subway entrance snap stub build skipped: asset="
                           + order.AssetId
                           + " endpoint="
                           + order.EndpointName
@@ -3327,7 +3476,7 @@ namespace PedestrianCrossingToolkit
             AddNode(lastNode);
             RegisterBuiltPathAnchorNode(groundPosition, firstNode);
             RegisterBuiltPathAnchorNode(snapEnd, lastNode);
-            Debug.Log("[PedestrianCrossingToolkit] Subway entrance snap stub built: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Subway entrance snap stub built: asset="
                       + order.AssetId
                       + " endpoint="
                       + order.EndpointName
@@ -3681,7 +3830,7 @@ namespace PedestrianCrossingToolkit
             AddSubwayEntranceStairRails(assetId, position, frame, width, length);
             AddSubwayEntranceCanopy(assetId, position, frame, width);
             RegisterSubwayEntranceVisualObjects(key, objectStartIndex);
-            Debug.Log("[PedestrianCrossingToolkit] Subway entrance visual built: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Subway entrance visual built: asset="
                       + assetId
                       + " endpoint="
                       + endpointName
@@ -3962,7 +4111,7 @@ namespace PedestrianCrossingToolkit
             MeshFilter filter = roof.AddComponent<MeshFilter>();
             filter.mesh = mesh;
             MeshRenderer renderer = roof.AddComponent<MeshRenderer>();
-            renderer.material = GetSubwayEntranceCanopyMaterial();
+            renderer.material = GetSubwayEntranceRoofMaterial();
             ConfigureSubwayEntranceSurfaceRenderer(renderer);
             BuiltBridgeConcreteObjects.Add(roof);
         }
@@ -4328,7 +4477,7 @@ namespace PedestrianCrossingToolkit
             ushort nodeId;
             if (!TryGetSignalControlNode(asset, out nodeId))
             {
-                Debug.Log("[PedestrianCrossingToolkit] Signal traffic control skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Signal traffic control skipped: asset="
                           + order.AssetId
                           + " reason=signal-crossing-needs-segment-join-node");
                 return;
@@ -4337,7 +4486,7 @@ namespace PedestrianCrossingToolkit
             bool junction = SetBuiltSignalNodeFlag(nodeId, NetNode.Flags.Junction, true);
             bool trafficLights = SetBuiltSignalNodeFlag(nodeId, NetNode.Flags.TrafficLights, true);
             bool crossings = SetBuiltSignalSurfaceCrossings(nodeId, true);
-            Debug.Log("[PedestrianCrossingToolkit] Signal traffic control applied: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Signal traffic control applied: asset="
                       + order.AssetId
                       + " node="
                       + nodeId
@@ -4465,14 +4614,14 @@ namespace PedestrianCrossingToolkit
             ushort nodeId;
             if (!TryGetSurfaceCrossingControlNode(asset, out nodeId))
             {
-                Debug.Log("[PedestrianCrossingToolkit] Surface crossing control skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Surface crossing control skipped: asset="
                           + order.AssetId
                           + " reason=connector-only-crossing-has-no-road-node-control");
                 return;
             }
 
             bool crossings = SetBuiltNodeSurfaceCrossings(nodeId, true);
-            Debug.Log("[PedestrianCrossingToolkit] Surface crossing control applied: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Surface crossing control applied: asset="
                       + order.AssetId
                       + " node="
                       + nodeId
@@ -4525,7 +4674,7 @@ namespace PedestrianCrossingToolkit
 
             bool keepEnabled = HasRemainingSurfaceCrossingControlAtNode(nodeId, removed.Id);
             bool changed = SetBuiltNodeSurfaceCrossings(nodeId, keepEnabled);
-            Debug.Log("[PedestrianCrossingToolkit] Surface crossing control refreshed after removal: reason="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Surface crossing control refreshed after removal: reason="
                       + reason
                       + " removedAsset="
                       + removed.Id
@@ -4540,6 +4689,7 @@ namespace PedestrianCrossingToolkit
 
         private static bool HasRemainingSurfaceCrossingControlAtNode(ushort nodeId, int removedAssetId)
         {
+            ManagerCapacity.EnsureArrayCapacity(ref SurfaceControlAssetBuffer, CrossingPlacementRegistry.Count);
             int count = CrossingPlacementRegistry.CopyTo(SurfaceControlAssetBuffer);
             for (int i = 0; i < count; i++)
             {
@@ -4559,6 +4709,13 @@ namespace PedestrianCrossingToolkit
             }
 
             return false;
+        }
+
+        private static void EnsureBuildBufferCapacity()
+        {
+            ManagerCapacity.EnsureArrayCapacity(ref BuildBuffer, CrossingPathWorkOrderPlanner.WorkOrderCount);
+            ManagerCapacity.EnsureArrayCapacity(ref ConnectorBuildBuffer, CrossingLandingConnectorPlanner.WorkOrderCount);
+            ManagerCapacity.EnsureArrayCapacity(ref AccessBuildBuffer, CrossingLandingConnectorPlanner.AccessAssetCount);
         }
 
         private static void RegisterBuiltSignalController(int assetId, ushort nodeId, ushort roadSegmentId, Vector3 center, Vector3 firstPosition, Vector3 secondPosition, Vector3 conflictFirstPosition, Vector3 conflictSecondPosition, Vector3 roadDirection, bool expandedWaitingZones)
@@ -4587,7 +4744,7 @@ namespace PedestrianCrossingToolkit
             RefreshSignalPedestrianCache(ref newController, true);
             ReassertSignalControllerState(ref newController);
             BuiltSignalControllers.Add(newController);
-            Debug.Log("[PedestrianCrossingToolkit] Signal phase timing: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Signal phase timing: asset="
                       + assetId
                       + " node="
                       + nodeId
@@ -4761,7 +4918,7 @@ namespace PedestrianCrossingToolkit
 
             if (PendingSignalControllerStateRestores.Count > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Prepared signal controller state restore: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Prepared signal controller state restore: reason="
                           + _pendingSignalControllerStateRestoreReason
                           + " excludedAsset="
                           + excludedAssetId
@@ -4786,7 +4943,7 @@ namespace PedestrianCrossingToolkit
 
                 restore.ApplyTo(ref controller);
                 PendingSignalControllerStateRestores.RemoveAt(i);
-                Debug.Log("[PedestrianCrossingToolkit] Restored signal controller state after rebuild: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Restored signal controller state after rebuild: reason="
                           + _pendingSignalControllerStateRestoreReason
                           + " asset="
                           + controller.AssetId
@@ -6501,7 +6658,7 @@ namespace PedestrianCrossingToolkit
 
             if (HorizontalDistance(resolvedPosition, basePosition) > 0.25f)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge support anchored to pedestrian lane: segment="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge support anchored to pedestrian lane: segment="
                           + segmentId
                           + " lanePosition="
                           + lanePosition.ToString("0.00")
@@ -6518,7 +6675,7 @@ namespace PedestrianCrossingToolkit
         {
             if (!pavementAnchored && RoadSurfacePlacementGuard.IsOnRoadSurface(basePosition))
             {
-                Debug.Log("[PedestrianCrossingToolkit] Bridge support pillar skipped on road surface: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Bridge support pillar skipped on road surface: asset="
                           + assetId
                           + " position="
                           + basePosition);
@@ -6776,10 +6933,7 @@ namespace PedestrianCrossingToolkit
             if (renderer == null)
                 return;
 
-            renderer.shadowCastingMode = ShadowCastingMode.Off;
-            renderer.receiveShadows = false;
-            renderer.lightProbeUsage = LightProbeUsage.Off;
-            renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+            ConfigureWeatherSurfaceRenderer(renderer);
         }
 
         private static void ConfigureSubwayEntranceSurfaceRenderer(Renderer renderer)
@@ -6964,8 +7118,7 @@ namespace PedestrianCrossingToolkit
             filter.mesh = mesh;
             MeshRenderer renderer = obj.AddComponent<MeshRenderer>();
             renderer.material = material ?? GetBridgeConcreteMaterial();
-            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            renderer.receiveShadows = true;
+            ConfigureBridgeCosmeticRenderer(renderer);
             BuiltBridgeConcreteObjects.Add(obj);
             return obj;
         }
@@ -7177,7 +7330,12 @@ namespace PedestrianCrossingToolkit
 
         private static Material GetBridgeRoofMaterial()
         {
-            return GetBridgeTrimMaterial();
+            Material material = GetBridgeCosmeticMaterial(
+                ref _bridgeRoofMaterial,
+                new Color(0.24f, 0.29f, 0.31f, 1f));
+            material.name = "PCT Shiny Metallic Bridge Roof";
+            ConfigureMetallicFinish(material, 0.88f, 0.82f);
+            return material;
         }
 
         private static Material GetBridgeWallMaterial()
@@ -7202,7 +7360,9 @@ namespace PedestrianCrossingToolkit
 
         private static Material GetBridgeTrimMaterial()
         {
-            return GetBridgeCosmeticMaterial(ref _bridgeTrimMaterial, new Color(0.14f, 0.17f, 0.18f, 1f));
+            Material material = GetBridgeCosmeticMaterial(ref _bridgeTrimMaterial, new Color(0.14f, 0.17f, 0.18f, 1f));
+            ConfigureMetallicFinish(material, 0.58f, 0.48f);
+            return material;
         }
 
         private static Material GetBridgeWarningStripeMaterial()
@@ -7212,9 +7372,11 @@ namespace PedestrianCrossingToolkit
 
         private static Shader GetBridgeCosmeticShader()
         {
-            return Shader.Find("Unlit/Color")
+            return Shader.Find("Standard")
+                   ?? Shader.Find("Diffuse")
+                   ?? Shader.Find("Unlit/Color")
                    ?? Shader.Find("Self-Illumin/Diffuse")
-                   ?? Shader.Find("Diffuse");
+                   ;
         }
 
         private static Material GetBridgeCosmeticMaterial(ref Material material, Color color)
@@ -7238,9 +7400,12 @@ namespace PedestrianCrossingToolkit
                 material.SetColor("_Color", color);
             if (material.HasProperty("_TintColor"))
                 material.SetColor("_TintColor", color);
-            if (material.HasProperty("_EmissionColor"))
-                material.SetColor("_EmissionColor", color * 0.35f);
-            material.EnableKeyword("_EMISSION");
+            if (material.HasProperty("_Metallic"))
+                material.SetFloat("_Metallic", 0f);
+            if (material.HasProperty("_Glossiness"))
+                material.SetFloat("_Glossiness", 0.10f);
+            if (material.HasProperty("_GlossMapScale"))
+                material.SetFloat("_GlossMapScale", 0.10f);
         }
 
         private static Material GetSubwayEntranceWallMaterial()
@@ -7262,13 +7427,45 @@ namespace PedestrianCrossingToolkit
             if (_subwayEntranceCanopyMaterial != null)
                 return _subwayEntranceCanopyMaterial;
 
-            Shader shader = Shader.Find("Unlit/Color") ?? Shader.Find("Diffuse");
+            Shader shader = GetBridgeCosmeticShader();
             if (shader == null)
                 return GetBridgeTrimMaterial();
 
             _subwayEntranceCanopyMaterial = new Material(shader);
             _subwayEntranceCanopyMaterial.color = new Color(0.18f, 0.21f, 0.22f, 1f);
+            ConfigureMetallicFinish(_subwayEntranceCanopyMaterial, 0.58f, 0.48f);
             return _subwayEntranceCanopyMaterial;
+        }
+
+        private static Material GetSubwayEntranceRoofMaterial()
+        {
+            if (_subwayEntranceRoofMaterial != null)
+                return _subwayEntranceRoofMaterial;
+
+            Shader shader = GetBridgeCosmeticShader();
+            if (shader == null)
+                return GetSubwayEntranceCanopyMaterial();
+
+            _subwayEntranceRoofMaterial = new Material(shader);
+            _subwayEntranceRoofMaterial.name = "PCT Shiny Metallic Subway Roof";
+            ConfigureBridgeCosmeticMaterial(
+                _subwayEntranceRoofMaterial,
+                new Color(0.24f, 0.29f, 0.31f, 1f));
+            ConfigureMetallicFinish(_subwayEntranceRoofMaterial, 0.88f, 0.82f);
+            return _subwayEntranceRoofMaterial;
+        }
+
+        private static void ConfigureMetallicFinish(Material material, float metallic, float glossiness)
+        {
+            if (material == null)
+                return;
+
+            if (material.HasProperty("_Metallic"))
+                material.SetFloat("_Metallic", Mathf.Clamp01(metallic));
+            if (material.HasProperty("_Glossiness"))
+                material.SetFloat("_Glossiness", Mathf.Clamp01(glossiness));
+            if (material.HasProperty("_GlossMapScale"))
+                material.SetFloat("_GlossMapScale", Mathf.Clamp01(glossiness));
         }
 
         private static Material GetSubwayEntranceTileMaterial()
@@ -7529,7 +7726,7 @@ namespace PedestrianCrossingToolkit
 
             if (nodeCount > 0 || segmentCount > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Reverted built signal traffic controls: nodes="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Reverted built signal traffic controls: nodes="
                           + nodeCount
                           + " segments="
                           + segmentCount);
@@ -7605,7 +7802,7 @@ namespace PedestrianCrossingToolkit
 
             ReapplySignalControllerStates();
 
-            Debug.Log("[PedestrianCrossingToolkit] Restored signal road state snapshot: reason="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Restored signal road state snapshot: reason="
                       + reason
                       + " asset="
                       + assetId
@@ -8018,7 +8215,7 @@ namespace PedestrianCrossingToolkit
                 int removedConnectorSegments = ClearSegmentedSurfacePath(order);
                 AddSurfaceCrossingVisuals(order);
                 QueueBuiltSignalControl(order);
-                Debug.Log("[PedestrianCrossingToolkit] Signal crossing using vanilla node crossing: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Signal crossing using vanilla node crossing: asset="
                           + order.AssetId
                           + " node="
                           + asset.Plan.TargetNodeId
@@ -8082,7 +8279,7 @@ namespace PedestrianCrossingToolkit
                 if (errors != ToolBase.ToolErrors.None || segment == 0)
                 {
                     skipped++;
-                    Debug.Log("[PedestrianCrossingToolkit] Segmented surface path section skipped: asset="
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Segmented surface path section skipped: asset="
                               + order.AssetId
                               + " kind="
                               + order.Kind
@@ -8125,7 +8322,7 @@ namespace PedestrianCrossingToolkit
             AddSurfaceCrossingVisuals(order);
             ApplyBuiltSurfaceCrossingControl(order);
             QueueBuiltSignalControl(order);
-            Debug.Log("[PedestrianCrossingToolkit] Segmented surface connector path built: asset="
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Segmented surface connector path built: asset="
                       + order.AssetId
                       + " kind="
                       + order.Kind

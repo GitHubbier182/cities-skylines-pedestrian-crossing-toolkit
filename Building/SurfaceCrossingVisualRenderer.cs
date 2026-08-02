@@ -119,7 +119,7 @@ namespace PedestrianCrossingToolkit
                 return false;
             }
 
-            return PedestrianCrossingLog.VerboseDiagnostics;
+            return PedestrianCrossingLog.AdvancedDiagnostics;
         }
 
         private static void LogSurfaceVisualDiagnostics(
@@ -998,7 +998,7 @@ namespace PedestrianCrossingToolkit
         {
             if (roadDirection.sqrMagnitude <= 0.01f)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Signal stop lines skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Signal stop lines skipped: asset="
                           + assetId
                           + " reason=missing-road-direction");
                 return;
@@ -1007,7 +1007,7 @@ namespace PedestrianCrossingToolkit
             SurfaceMarkingSpan fullRoadSpan;
             if (!TryGetSignalStopLineRoadSpan(roadSpans, out fullRoadSpan))
             {
-                Debug.Log("[PedestrianCrossingToolkit] Signal stop lines skipped: asset="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Signal stop lines skipped: asset="
                           + assetId
                           + " reason=no-road-span");
                 return;

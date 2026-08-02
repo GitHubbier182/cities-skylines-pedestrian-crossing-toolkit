@@ -9,7 +9,7 @@ namespace PedestrianCrossingToolkit
         private const float SuppressionDistance = 5f;
         private const int AssetBufferSize = 1024;
 
-        private static readonly CrossingPlacementAsset[] AssetBuffer = new CrossingPlacementAsset[AssetBufferSize];
+        private static CrossingPlacementAsset[] AssetBuffer = new CrossingPlacementAsset[AssetBufferSize];
         private static readonly List<SuppressionSpan> SpanBuffer = new List<SuppressionSpan>(AssetBufferSize);
         private static readonly HashSet<ushort> TargetNodes = new HashSet<ushort>();
         private static readonly HashSet<SegmentEndKey> TargetSegmentEnds = new HashSet<SegmentEndKey>();
@@ -100,7 +100,7 @@ namespace PedestrianCrossingToolkit
             {
                 bool tmpeAvailable = PedestrianCrossingToolkitState.TrafficManagerInteropAllowed
                                      && TrafficManagerPedestrianCrossingIntegration.IsAvailable;
-                Debug.Log("[PedestrianCrossingToolkit] Built vanilla surface suppression scan: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Built vanilla surface suppression scan: reason="
                           + reason
                           + " assets="
                           + assetCount
@@ -172,7 +172,7 @@ namespace PedestrianCrossingToolkit
             TargetSegmentEnds.Clear();
             if (tracked > 0 || restored > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Restored grade-separated vanilla crossing suppression: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Restored grade-separated vanilla crossing suppression: reason="
                           + reason
                           + " trackedEnds="
                           + tracked
@@ -198,7 +198,7 @@ namespace PedestrianCrossingToolkit
             RestoreBuffer.Clear();
             if (tracked > 0 || targets > 0)
             {
-                Debug.Log("[PedestrianCrossingToolkit] Grade-separated suppression unload state forgotten without restoring network flags: reason="
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade-separated suppression unload state forgotten without restoring network flags: reason="
                           + reason
                           + " trackedEnds="
                           + tracked
@@ -252,6 +252,7 @@ namespace PedestrianCrossingToolkit
         {
             SpanBuffer.Clear();
             assetCount = 0;
+            ManagerCapacity.EnsureArrayCapacity(ref AssetBuffer, CrossingPlacementRegistry.Count);
             int copied = CrossingPlacementRegistry.CopyTo(AssetBuffer);
             for (int i = 0; i < copied; i++)
             {

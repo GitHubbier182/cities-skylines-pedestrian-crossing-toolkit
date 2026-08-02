@@ -155,12 +155,6 @@ namespace PedestrianCrossingToolkit
                    + " builtConnectors={" + BuiltConnectors.ToLogString() + "}";
         }
 
-        public string ToShortIssueStringForUserInfo()
-        {
-            string text = ToShortIssueString();
-            return string.IsNullOrEmpty(text) ? "none" : text;
-        }
-
         private string ToShortIssueString()
         {
             string text = string.Empty;

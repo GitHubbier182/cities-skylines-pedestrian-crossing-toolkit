@@ -11,7 +11,7 @@ namespace PedestrianCrossingToolkit
         SubwayPointToPoint,
         PedestrianBridge,
         AutoScanReject,
-        RemoveCrossing
+        InspectCrossing
     }
 
     public enum CrossingApplicationKind
