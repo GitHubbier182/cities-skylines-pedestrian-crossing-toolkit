@@ -83,3 +83,22 @@ retain their normal appearance.
 - Release gate: `STEAM_RELEASE_CHECKLIST.md`
 
 Run `./build+deploy.sh` from this folder after code changes.
+
+## Copyright and intellectual property
+
+Copyright © 2026 ScratchyBald. All rights reserved.
+
+This repository is published for source transparency and reference only. No
+licence is granted to copy, modify, compile, distribute, repackage, republish,
+or incorporate its code or documentation into another project without prior
+written permission, except as permitted by applicable law and GitHub's Terms of
+Service.
+
+**Pedestrian Crossing Toolkit** and its associated original branding identify a
+ScratchyBald release. They may not be used in a way that falsely suggests
+authorship, endorsement, or affiliation. Original concepts and functionality
+are claimed only to the extent protected by applicable law.
+
+Cities: Skylines and related marks are the property of their respective owners.
+This independent community modification is not affiliated with or endorsed by
+Colossal Order or Paradox Interactive.
