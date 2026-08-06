@@ -35,25 +35,29 @@ namespace PedestrianCrossingToolkit
     {
         private static readonly ReleaseNoticeContent ReleaseNotice = new ReleaseNoticeContent(
             "PedestrianCrossingToolkit.ShownReleaseNoticeId",
-            "v2.0.0",
-            "Pedestrian Crossing Toolkit 2.0.0",
-            "Roads-menu tools",
+            "v2.0.1",
+            "Pedestrian Crossing Toolkit 2.0.1",
+            "Roads-menu responsiveness",
             string.Empty,
             "PCT",
             new[]
             {
-                "The floating PCT Tool and its launcher are removed: Standard, Signalled, Auto Subway, Manual Subway, Bridge and Auto Scan are now in Roads > Crossing.",
-                "Inspect Crossing is now automatic while Roads > Crossing is open, showing crossing types from city scale and details or live signal phases when zoomed in.",
-                "Use vanilla Bulldoze to remove one PCT crossing without demolishing its road; confirmed Clear All Crossings is now in PCT Options.",
-                "The old manual validation action is replaced by scheduled read-only checks that warn you and mark crossings needing attention without changing them.",
-                "Auto Scan asks whether to preview: Reject, Apply and Cancel appear for a preview, while direct apply needs no separate PCT Tool.",
-                "Auto Scan significantly improved so it's faster, more accurate and creates more crossings in one pass."
+                "Roads > Crossing now stays responsive in heavily modded cities and remains confined to its selected Roads tab."
             },
             true,
             string.Empty,
             null,
             new[]
             {
+                new ReleaseNoticeVersion("v2.0.0", "2 August 2026, 16:50 BST", new[]
+                {
+                    "The floating PCT Tool and its launcher are removed: Standard, Signalled, Auto Subway, Manual Subway, Bridge and Auto Scan are now in Roads > Crossing.",
+                    "Inspect Crossing is now automatic while Roads > Crossing is open, showing crossing types from city scale and details or live signal phases when zoomed in.",
+                    "Use vanilla Bulldoze to remove one PCT crossing without demolishing its road; confirmed Clear All Crossings is now in PCT Options.",
+                    "The old manual validation action is replaced by scheduled read-only checks that warn you and mark crossings needing attention without changing them.",
+                    "Auto Scan asks whether to preview: Reject, Apply and Cancel appear for a preview, while direct apply needs no separate PCT Tool.",
+                    "Auto Scan significantly improved so it's faster, more accurate and creates more crossings in one pass."
+                }, true),
                 new ReleaseNoticeVersion("v1.3.0", "29 July 2026, 02:06 BST", new[]
                 {
                     "Expanded-capacity cities no longer become stuck during load or crossing scans.",

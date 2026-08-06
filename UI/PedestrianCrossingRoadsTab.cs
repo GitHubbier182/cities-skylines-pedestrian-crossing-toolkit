@@ -22,6 +22,7 @@ namespace PedestrianCrossingToolkit
         private UIButton _crossingsTab;
         private UIComponent _crossingsPage;
         private PedestrianCrossingRoadsTabPanel _crossingsPanel;
+        private int _tabIndex = -1;
         private bool _wasOpen;
 
         public static bool IsOpen
@@ -99,6 +100,7 @@ namespace PedestrianCrossingToolkit
                 }
                 else
                 {
+                    SyncPageVisibility();
                     _crossingsTab.isEnabled =
                         !PedestrianCrossingToolkitState.IsAutoScanObservationActive;
                     bool open = IsOpen;
@@ -224,12 +226,16 @@ namespace PedestrianCrossingToolkit
             _crossingsTab = tab;
             _crossingsPage = page;
             _crossingsPanel = panel;
+            _tabIndex = FindTabIndex(tabstrip, tab);
             ConfigureTab(tabstrip, tab);
             tab.eventClick -= OnCrossingsTabClicked;
             tab.eventClick += OnCrossingsTabClicked;
+            tabstrip.eventSelectedIndexChanged -= OnSelectedIndexChanged;
+            tabstrip.eventSelectedIndexChanged += OnSelectedIndexChanged;
             page.eventVisibilityChanged -= OnCrossingsPageVisibilityChanged;
             page.eventVisibilityChanged += OnCrossingsPageVisibilityChanged;
             _installed = true;
+            SyncPageVisibility();
             _wasOpen = IsOpen;
             panel.Refresh();
         }
@@ -241,6 +247,9 @@ namespace PedestrianCrossingToolkit
             if (ToolsModifierControl.toolController != null)
                 ToolsModifierControl.SetTool<DefaultTool>();
 
+            if (_tabstrip != null && _tabIndex >= 0)
+                _tabstrip.selectedIndex = _tabIndex;
+
             if (_crossingsPage != null)
             {
                 _crossingsPage.isVisible = true;
@@ -251,8 +260,30 @@ namespace PedestrianCrossingToolkit
             RefreshInstance();
         }
 
+        private void OnSelectedIndexChanged(UIComponent component, int selectedIndex)
+        {
+            SyncPageVisibility();
+        }
+
+        private void SyncPageVisibility()
+        {
+            if (_tabstrip == null || _crossingsTab == null || _crossingsPage == null)
+                return;
+
+            if (_tabIndex < 0)
+                _tabIndex = FindTabIndex(_tabstrip, _crossingsTab);
+
+            bool selected = IsSelected(_crossingsTab, _tabstrip, _tabIndex);
+            bool visibilityChanged = _crossingsPage.isVisible != selected;
+            if (visibilityChanged)
+                _crossingsPage.isVisible = selected;
+            if (selected && visibilityChanged)
+                _crossingsPage.BringToFront();
+        }
+
         private void OnCrossingsPageVisibilityChanged(UIComponent component, bool visible)
         {
+            CrossingAppliedOverlay.InvalidateCrossingSummaryUiCache();
             if (visible)
                 RefreshInstance();
             else
@@ -271,6 +302,9 @@ namespace PedestrianCrossingToolkit
 
         private void RemoveInstalledUi()
         {
+            if (_tabstrip != null)
+                _tabstrip.eventSelectedIndexChanged -= OnSelectedIndexChanged;
+
             if (_crossingsTab != null)
             {
                 _crossingsTab.eventClick -= OnCrossingsTabClicked;
@@ -288,12 +322,45 @@ namespace PedestrianCrossingToolkit
 
         private void ClearInstalledReferences()
         {
+            if (_tabstrip != null)
+                _tabstrip.eventSelectedIndexChanged -= OnSelectedIndexChanged;
             _installed = false;
             _tabstrip = null;
             _crossingsTab = null;
             _crossingsPage = null;
             _crossingsPanel = null;
+            _tabIndex = -1;
             _wasOpen = false;
+        }
+
+        private static bool IsSelected(UIButton tab, UITabstrip tabstrip, int tabIndex)
+        {
+            if (tab == null || tabstrip == null)
+                return false;
+
+            if (tabIndex >= 0)
+                return tabstrip.selectedIndex == tabIndex;
+
+            return tab.state == UIButton.ButtonState.Focused;
+        }
+
+        private static int FindTabIndex(UITabstrip tabstrip, UIButton tab)
+        {
+            if (tabstrip == null || tab == null)
+                return -1;
+
+            int tabIndex = 0;
+            for (int i = 0; i < tabstrip.components.Count; i++)
+            {
+                UIButton candidate = tabstrip.components[i] as UIButton;
+                if (candidate == null || candidate.transform.parent != tabstrip.transform)
+                    continue;
+                if (candidate == tab)
+                    return tabIndex;
+                tabIndex++;
+            }
+
+            return -1;
         }
 
         private static RoadsGroupPanel FindRoadsGroupPanel()
@@ -473,6 +540,9 @@ namespace PedestrianCrossingToolkit
         private UIButton _manualSubwayButton;
         private UIButton _bridgeButton;
         private UIButton _autoScanButton;
+        private readonly UIButton[] _buttons = new UIButton[6];
+        private readonly UISprite[] _icons = new UISprite[6];
+        private UIComponent _layoutParent;
 
         public override void Start()
         {
@@ -526,15 +596,43 @@ namespace PedestrianCrossingToolkit
                 CrossingRoadsIconKind.AutoScan);
             _autoScanButton.eventClick += OnAutoScanClicked;
 
+            _buttons[0] = _standardButton;
+            _buttons[1] = _signalButton;
+            _buttons[2] = _autoSubwayButton;
+            _buttons[3] = _manualSubwayButton;
+            _buttons[4] = _bridgeButton;
+            _buttons[5] = _autoScanButton;
+            for (int i = 0; i < _buttons.Length; i++)
+                _icons[i] = _buttons[i].GetComponentInChildren<UISprite>();
+
+            BindLayoutParent();
+
             LayoutButtons();
             Refresh();
         }
 
-        public override void Update()
+        public override void OnDestroy()
         {
-            base.Update();
+            if (_layoutParent != null)
+                _layoutParent.eventSizeChanged -= OnParentSizeChanged;
+            _layoutParent = null;
+            base.OnDestroy();
+        }
+
+        private void BindLayoutParent()
+        {
+            if (_layoutParent == parent)
+                return;
+            if (_layoutParent != null)
+                _layoutParent.eventSizeChanged -= OnParentSizeChanged;
+            _layoutParent = parent;
+            if (_layoutParent != null)
+                _layoutParent.eventSizeChanged += OnParentSizeChanged;
+        }
+
+        private void OnParentSizeChanged(UIComponent component, Vector2 value)
+        {
             LayoutButtons();
-            Refresh();
         }
 
         public void Refresh()
@@ -670,22 +768,15 @@ namespace PedestrianCrossingToolkit
                 (availableWidth - (ButtonGap * 5f)) / 6f,
                 96f,
                 128f);
-            UIButton[] buttons =
-            {
-                _standardButton,
-                _signalButton,
-                _autoSubwayButton,
-                _manualSubwayButton,
-                _bridgeButton,
-                _autoScanButton
-            };
-
             float x = HorizontalMargin;
-            for (int i = 0; i < buttons.Length; i++)
+            for (int i = 0; i < _buttons.Length; i++)
             {
-                buttons[i].width = buttonWidth;
-                buttons[i].relativePosition = new Vector3(x, 8f);
-                UISprite icon = buttons[i].GetComponentInChildren<UISprite>();
+                UIButton button = _buttons[i];
+                if (button == null)
+                    continue;
+                button.width = buttonWidth;
+                button.relativePosition = new Vector3(x, 8f);
+                UISprite icon = _icons[i];
                 if (icon != null)
                     icon.relativePosition = new Vector3((buttonWidth - icon.width) * 0.5f, 6f);
                 x += buttonWidth + ButtonGap;

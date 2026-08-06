@@ -46,6 +46,8 @@ namespace PedestrianCrossingToolkit
         private const float RoadToolWarningMinHeight = 70f;
         private const float RoadToolWarningCursorOffsetX = 22f;
         private const float RoadToolWarningCursorOffsetY = 28f;
+        private const float CrossingSummaryUiRefreshSeconds = 0.75f;
+        private const float RoadToolWarningRaycastSeconds = 0.10f;
         private const int HighlightCircleSegments = 32;
         private const float HighlightRefreshSeconds = 0.35f;
         private static Material _subwayRouteWorldMaterial;
@@ -94,6 +96,17 @@ namespace PedestrianCrossingToolkit
         private bool _worldVisualCachedCrossingTabOpen;
         private int _routeWorldVisualActiveCount;
         private int _crossingHighlightWorldVisualActiveCount;
+        private bool _crossingSummaryUiCacheReady;
+        private float _nextCrossingSummaryUiRefreshTime;
+        private int _crossingSummaryCachedScreenWidth;
+        private int _crossingSummaryCachedScreenHeight;
+        private Vector2 _crossingSummaryCachedUiResolution;
+        private bool _roadToolWarningCacheReady;
+        private float _nextRoadToolWarningRaycastTime;
+        private ToolBase _roadToolWarningCachedTool;
+        private int _roadToolWarningCachedRegistryRevision = -1;
+        private ushort _roadToolWarningCachedSegmentId;
+        private int _roadToolWarningCachedCrossingCount;
 
         public static void CreateIfNeeded(UIView view)
         {
@@ -113,6 +126,14 @@ namespace PedestrianCrossingToolkit
             Instance.ClearCrossingHighlightWorldVisuals(true);
             UnityEngine.Object.Destroy(Instance);
             Instance = null;
+        }
+
+        internal static void InvalidateCrossingSummaryUiCache()
+        {
+            if (Instance == null)
+                return;
+            Instance._crossingSummaryUiCacheReady = false;
+            Instance._nextCrossingSummaryUiRefreshTime = 0f;
         }
 
         private void Update()
@@ -350,14 +371,18 @@ namespace PedestrianCrossingToolkit
             }
         }
 
-        private static void DrawRoadToolCrossingWarning(Camera camera)
+        private void DrawRoadToolCrossingWarning(Camera camera)
         {
-            ushort segmentId;
-            if (!TryGetHoveredRoadToolSegment(camera, out segmentId))
+            if (CrossingPlacementRegistry.Count <= 0)
+            {
+                ResetRoadToolWarningCache();
                 return;
+            }
 
-            int crossingCount = CrossingPlacementRegistry.CountAssetsTouchingSegment(segmentId);
-            if (crossingCount <= 0)
+            ushort segmentId;
+            int crossingCount;
+            if (!TryGetRoadToolWarningSample(camera, out segmentId, out crossingCount)
+                || crossingCount <= 0)
                 return;
 
             string plural = crossingCount == 1 ? string.Empty : "s";
@@ -372,40 +397,70 @@ namespace PedestrianCrossingToolkit
             DrawRoadToolWarningBox(rect, text);
         }
 
-        private static bool TryGetHoveredRoadToolSegment(Camera camera, out ushort segmentId)
+        private bool TryGetRoadToolWarningSample(Camera camera, out ushort segmentId, out int crossingCount)
         {
             segmentId = 0;
+            crossingCount = 0;
             ToolController controller = ToolsModifierControl.toolController;
+            ToolBase currentTool = controller == null ? null : controller.CurrentTool;
             if (camera == null
-                || controller == null
-                || !(controller.CurrentTool is NetTool)
+                || !(currentTool is NetTool)
                 || PedestrianCrossingToolkitState.ActiveMode != PedestrianToolMode.None
                 || PedestrianCrossingToolkitPanel.IsMouseOverAnyBlockingUi())
             {
+                ResetRoadToolWarningCache();
                 return false;
             }
 
-            ushort hoveredSegmentId;
-            if (!PedestrianCrossingInteractionTool.TryRaycastRoadSegmentForOverlay(camera, out hoveredSegmentId))
-                return false;
+            float now = Time.unscaledTime;
+            int registryRevision = CrossingPlacementRegistry.Revision;
+            if (!_roadToolWarningCacheReady
+                || _roadToolWarningCachedTool != currentTool
+                || _roadToolWarningCachedRegistryRevision != registryRevision
+                || now >= _nextRoadToolWarningRaycastTime)
+            {
+                ushort hoveredSegmentId;
+                _roadToolWarningCachedSegmentId =
+                    PedestrianCrossingInteractionTool.TryRaycastRoadSegmentForOverlay(camera, out hoveredSegmentId)
+                    && IsEligibleRoadToolWarningSegment(hoveredSegmentId)
+                        ? hoveredSegmentId
+                        : (ushort)0;
+                _roadToolWarningCachedCrossingCount = _roadToolWarningCachedSegmentId == 0
+                    ? 0
+                    : CrossingPlacementRegistry.CountAssetsTouchingSegment(_roadToolWarningCachedSegmentId);
+                _roadToolWarningCachedTool = currentTool;
+                _roadToolWarningCachedRegistryRevision = registryRevision;
+                _nextRoadToolWarningRaycastTime = now + RoadToolWarningRaycastSeconds;
+                _roadToolWarningCacheReady = true;
+            }
 
-            if (CrossingPathBuilder.IsBuiltCrossingSegment(hoveredSegmentId))
+            segmentId = _roadToolWarningCachedSegmentId;
+            crossingCount = _roadToolWarningCachedCrossingCount;
+            return segmentId != 0;
+        }
+
+        private void ResetRoadToolWarningCache()
+        {
+            _roadToolWarningCacheReady = false;
+            _roadToolWarningCachedTool = null;
+            _roadToolWarningCachedRegistryRevision = -1;
+            _roadToolWarningCachedSegmentId = 0;
+            _roadToolWarningCachedCrossingCount = 0;
+        }
+
+        private static bool IsEligibleRoadToolWarningSegment(ushort segmentId)
+        {
+            if (segmentId == 0 || CrossingPathBuilder.IsBuiltCrossingSegment(segmentId))
                 return false;
 
             NetManager netManager = NetManager.instance;
-            if (netManager == null || hoveredSegmentId >= netManager.m_segments.m_size)
+            if (netManager == null || segmentId >= netManager.m_segments.m_size)
                 return false;
 
-            ref NetSegment segment = ref netManager.m_segments.m_buffer[hoveredSegmentId];
-            if ((segment.m_flags & NetSegment.Flags.Created) == 0
-                || segment.Info == null
-                || !(segment.Info.m_netAI is RoadBaseAI))
-            {
-                return false;
-            }
-
-            segmentId = hoveredSegmentId;
-            return true;
+            ref NetSegment segment = ref netManager.m_segments.m_buffer[segmentId];
+            return (segment.m_flags & NetSegment.Flags.Created) != 0
+                   && segment.Info != null
+                   && segment.Info.m_netAI is RoadBaseAI;
         }
 
         private static Vector2 CalculateRoadToolWarningSize(string text)
@@ -480,14 +535,32 @@ namespace PedestrianCrossingToolkit
             }
         }
 
-        private static bool PrepareCrossingSummaryBlockingRects()
+        private bool PrepareCrossingSummaryBlockingRects()
         {
             if (UIView.HasModalInput())
                 return false;
 
+            if (CrossingPlacementRegistry.Count <= 0)
+            {
+                CrossingSummaryBlockingRects.Clear();
+                _crossingSummaryUiCacheReady = true;
+                return false;
+            }
+
             UIView view = UIView.GetAView();
             if (view == null)
                 return false;
+
+            Vector2 uiResolution = view.GetScreenResolution();
+            float now = Time.unscaledTime;
+            if (_crossingSummaryUiCacheReady
+                && now < _nextCrossingSummaryUiRefreshTime
+                && _crossingSummaryCachedScreenWidth == Screen.width
+                && _crossingSummaryCachedScreenHeight == Screen.height
+                && _crossingSummaryCachedUiResolution == uiResolution)
+            {
+                return true;
+            }
 
             CrossingSummaryBlockingRects.Clear();
             UIComponent[] components = view.GetComponentsInChildren<UIComponent>();
@@ -496,6 +569,12 @@ namespace PedestrianCrossingToolkit
 
             for (int i = 0; i < components.Length; i++)
                 CollectCrossingSummaryBlockingRect(components[i], view);
+
+            _crossingSummaryCachedScreenWidth = Screen.width;
+            _crossingSummaryCachedScreenHeight = Screen.height;
+            _crossingSummaryCachedUiResolution = uiResolution;
+            _nextCrossingSummaryUiRefreshTime = now + CrossingSummaryUiRefreshSeconds;
+            _crossingSummaryUiCacheReady = true;
 
             return true;
         }

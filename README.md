@@ -1,6 +1,6 @@
 # Pedestrian Crossing Toolkit
 
-Version 2.0.0 is released on Steam Workshop item `3735259302` and as matching
+Version 2.0.1 is released on Steam Workshop item `3735259302` and as matching
 clean public source.
 
 ## Scope
@@ -40,6 +40,13 @@ manager's routine diagnostics. The exposed bridge deck roof, bridge
 access/stair roofs and subway canopy roof follow the game's rain, retained
 wetness and snow presentation while sheltered and road-integrated surfaces
 retain their normal appearance.
+
+Version 2.0.1 preserves that complete workflow while making the static Crossing
+tile layout event-driven, caching UI-occlusion discovery, sampling the road
+upgrade warning target at a bounded rate, and making the selected Roads tab the
+sole owner of Crossing-page visibility. These changes keep Roads > Crossing
+responsive in heavily modded cities without removing or changing its tools,
+summaries, warnings, placement, or removal behavior.
 
 ## Placement And Ownership
 

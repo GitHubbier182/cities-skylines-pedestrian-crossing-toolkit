@@ -389,15 +389,40 @@ namespace ScratchyBald.CitiesSkylines.UI
             for (int i = 0; i < versionBullets.Length; i++)
                 AppendWrapped(lines, versionBullets[i], maxChars, "- ", "  ");
 
-            if (hasTechnicalChanges)
+            if (hasTechnicalChanges && !ContainsTechnicalCatchAll(versionBullets))
             {
                 AppendWrapped(
                     lines,
-                    "Other technical fixes and under the hood improvements.",
+                    "Under the hood improvements & fixes.",
                     maxChars,
                     "- ",
                     "  ");
             }
+        }
+
+        private static bool ContainsTechnicalCatchAll(string[] bullets)
+        {
+            if (bullets == null)
+                return false;
+
+            for (int i = 0; i < bullets.Length; i++)
+            {
+                string bullet = bullets[i];
+                string normalized = bullet == null ? string.Empty : bullet.Trim();
+                if (string.Equals(
+                        normalized,
+                        "Under the hood improvements & fixes.",
+                        StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(
+                        normalized,
+                        "Other technical fixes and under the hood improvements.",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private void AppendWrapped(List<string> lines, string text, int maxChars, string firstPrefix, string continuationPrefix)
