@@ -35,20 +35,24 @@ namespace PedestrianCrossingToolkit
     {
         private static readonly ReleaseNoticeContent ReleaseNotice = new ReleaseNoticeContent(
             "PedestrianCrossingToolkit.ShownReleaseNoticeId",
-            "v2.0.1",
-            "Pedestrian Crossing Toolkit 2.0.1",
-            "Roads-menu responsiveness",
+            "v2.0.2",
+            "Pedestrian Crossing Toolkit 2.0.2",
+            "City-scale performance",
             string.Empty,
             "PCT",
             new[]
             {
-                "Roads > Crossing now stays responsive in heavily modded cities and remains confined to its selected Roads tab."
+                "Generated crossing presentation and automatic network checks now remain lightweight as the number of saved crossings grows."
             },
             true,
             string.Empty,
             null,
             new[]
             {
+                new ReleaseNoticeVersion("v2.0.1", "6 August 2026, 22:49 BST", new[]
+                {
+                    "Roads > Crossing now stays responsive in heavily modded cities and remains confined to its selected Roads tab."
+                }, true),
                 new ReleaseNoticeVersion("v2.0.0", "2 August 2026, 16:50 BST", new[]
                 {
                     "The floating PCT Tool and its launcher are removed: Standard, Signalled, Auto Subway, Manual Subway, Bridge and Auto Scan are now in Roads > Crossing.",
@@ -193,6 +197,7 @@ namespace PedestrianCrossingToolkit
             PedestrianCrossingToolkitState.ProcessNetworkDependencyChanges(realTimeDelta);
             PedestrianCrossingToolkitState.ProcessScheduledCrossingValidation();
             RoadPlacementRules.UpdateVanillaCrossingCache(realTimeDelta);
+            CrossingPathBuilder.UpdateGeneratedSurfacePresentation();
             CrossingPathBuilder.UpdateSignalControllers(GetSignalControllerDelta(realTimeDelta));
         }
 

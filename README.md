@@ -1,6 +1,6 @@
 # Pedestrian Crossing Toolkit
 
-Version 2.0.1 is released on Steam Workshop item `3735259302` and as matching
+Version 2.0.2 is released on Steam Workshop item `3735259302` and as matching
 clean public source.
 
 ## Scope
@@ -47,6 +47,11 @@ upgrade warning target at a bounded rate, and making the selected Roads tab the
 sole owner of Crossing-page visibility. These changes keep Roads > Crossing
 responsive in heavily modded cities without removing or changing its tools,
 summaries, warnings, placement, or removal behavior.
+
+Version 2.0.2 removes a saved-city rendering bottleneck by consolidating
+generated subway-entrance and weather-roof presentation updates and pacing
+automatic supporting-network checks across rendered frames. Crossing tools,
+signals, routes, visuals, persistence and compatibility behavior are unchanged.
 
 ## Placement And Ownership
 

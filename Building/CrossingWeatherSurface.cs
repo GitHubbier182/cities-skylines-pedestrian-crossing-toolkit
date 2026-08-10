@@ -16,6 +16,8 @@ namespace PedestrianCrossingToolkit
         private sealed class CrossingWeatherSurface : MonoBehaviour
         {
             private const int WeatherRefreshFrames = 12;
+            private static readonly System.Collections.Generic.List<CrossingWeatherSurface> Instances =
+                new System.Collections.Generic.List<CrossingWeatherSurface>();
             private const float RoofDryingRatePerSecond = 0.004f;
             private static int _lastWeatherFrame = -WeatherRefreshFrames;
             private static float _cachedWetness;
@@ -46,6 +48,7 @@ namespace PedestrianCrossingToolkit
                 _renderer = GetComponent<Renderer>();
                 if (_properties == null)
                     _properties = new MaterialPropertyBlock();
+                Instances.Add(this);
             }
 
             private void OnEnable()
@@ -53,19 +56,43 @@ namespace PedestrianCrossingToolkit
                 ApplyWeather(true);
             }
 
-            private void Update()
+            private void OnDestroy()
             {
-                ApplyWeather(false);
+                Instances.Remove(this);
+            }
+
+            internal static void UpdateAll()
+            {
+                if (!UpdateWeatherCache())
+                    return;
+
+                for (int i = Instances.Count - 1; i >= 0; i--)
+                {
+                    CrossingWeatherSurface instance = Instances[i];
+                    if (instance == null)
+                    {
+                        Instances.RemoveAt(i);
+                        continue;
+                    }
+
+                    instance.ApplyWeather(false, false);
+                }
             }
 
             private void ApplyWeather(bool force)
+            {
+                ApplyWeather(force, true);
+            }
+
+            private void ApplyWeather(bool force, bool refreshWeather)
             {
                 if (_renderer == null)
                     _renderer = GetComponent<Renderer>();
                 if (_renderer == null || _renderer.sharedMaterial == null)
                     return;
 
-                UpdateWeatherCache();
+                if (refreshWeather)
+                    UpdateWeatherCache();
                 float wetness = _cachedWetness;
                 float snow = _snowExposed ? _cachedSnow : 0f;
                 if (!force
@@ -119,10 +146,10 @@ namespace PedestrianCrossingToolkit
                 _renderer.SetPropertyBlock(_properties);
             }
 
-            private static void UpdateWeatherCache()
+            private static bool UpdateWeatherCache()
             {
                 if (Time.frameCount - _lastWeatherFrame < WeatherRefreshFrames)
-                    return;
+                    return false;
 
                 _lastWeatherFrame = Time.frameCount;
                 WeatherManager weather = WeatherManager.instance;
@@ -130,7 +157,7 @@ namespace PedestrianCrossingToolkit
                 {
                     _cachedWetness = 0f;
                     _cachedSnow = 0f;
-                    return;
+                    return true;
                 }
 
                 float rain = Mathf.Clamp01(weather.m_currentRain);
@@ -147,6 +174,7 @@ namespace PedestrianCrossingToolkit
                 _cachedSnow = rainIsSnow
                     ? Mathf.Clamp01(Mathf.Max(rain, groundWetness * 0.65f))
                     : 0f;
+                return true;
             }
 
             internal static void ResetCachedWeather()
@@ -160,6 +188,7 @@ namespace PedestrianCrossingToolkit
 
         internal static void ResetWeatherSurfaceState()
         {
+            SubwayEntranceInfoViewVisibility.Reset();
             CrossingWeatherSurface.ResetCachedWeather();
         }
 

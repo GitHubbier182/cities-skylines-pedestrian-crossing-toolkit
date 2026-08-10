@@ -10,7 +10,10 @@ namespace PedestrianCrossingToolkit
     {
         private sealed class SubwayEntranceInfoViewVisibility : MonoBehaviour
         {
-            private static int _lastCheckedFrame = -1;
+            private static readonly List<SubwayEntranceInfoViewVisibility> Instances =
+                new List<SubwayEntranceInfoViewVisibility>();
+            private static InfoManager.InfoMode _lastInfoMode;
+            private static bool _hasLastInfoMode;
             private static bool _showSurfaceEntrances = true;
 
             private Renderer _renderer;
@@ -18,20 +21,52 @@ namespace PedestrianCrossingToolkit
             private void Awake()
             {
                 _renderer = GetComponent<Renderer>();
-                UpdateVisibility();
+                Instances.Add(this);
+                UpdateVisibility(ShouldShowSurfaceEntrances());
             }
 
             private void OnEnable()
             {
-                UpdateVisibility();
+                UpdateVisibility(ShouldShowSurfaceEntrances());
             }
 
-            private void Update()
+            private void OnDestroy()
             {
-                UpdateVisibility();
+                Instances.Remove(this);
             }
 
-            private void UpdateVisibility()
+            internal static void UpdateAll()
+            {
+                InfoManager infoManager = InfoManager.instance;
+                InfoManager.InfoMode infoMode = infoManager == null
+                    ? InfoManager.InfoMode.None
+                    : infoManager.CurrentMode;
+                if (_hasLastInfoMode && infoMode == _lastInfoMode)
+                    return;
+
+                _lastInfoMode = infoMode;
+                _hasLastInfoMode = true;
+                _showSurfaceEntrances = infoMode == InfoManager.InfoMode.None;
+                for (int i = Instances.Count - 1; i >= 0; i--)
+                {
+                    SubwayEntranceInfoViewVisibility instance = Instances[i];
+                    if (instance == null)
+                    {
+                        Instances.RemoveAt(i);
+                        continue;
+                    }
+
+                    instance.UpdateVisibility(_showSurfaceEntrances);
+                }
+            }
+
+            internal static void Reset()
+            {
+                _hasLastInfoMode = false;
+                _showSurfaceEntrances = true;
+            }
+
+            private void UpdateVisibility(bool shouldShow)
             {
                 if (_renderer == null)
                     _renderer = GetComponent<Renderer>();
@@ -39,21 +74,22 @@ namespace PedestrianCrossingToolkit
                 if (_renderer == null)
                     return;
 
-                bool shouldShow = ShouldShowSurfaceEntrances();
                 if (_renderer.enabled != shouldShow)
                     _renderer.enabled = shouldShow;
             }
 
             private static bool ShouldShowSurfaceEntrances()
             {
-                if (Time.frameCount == _lastCheckedFrame)
-                    return _showSurfaceEntrances;
-
-                _lastCheckedFrame = Time.frameCount;
                 InfoManager infoManager = InfoManager.instance;
                 _showSurfaceEntrances = infoManager == null || infoManager.CurrentMode == InfoManager.InfoMode.None;
                 return _showSurfaceEntrances;
             }
+        }
+
+        internal static void UpdateGeneratedSurfacePresentation()
+        {
+            SubwayEntranceInfoViewVisibility.UpdateAll();
+            CrossingWeatherSurface.UpdateAll();
         }
 
         public struct BuiltConnectorValidationSummary

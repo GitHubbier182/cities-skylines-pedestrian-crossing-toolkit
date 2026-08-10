@@ -69,6 +69,10 @@ namespace PedestrianCrossingToolkit
         private static int _autoScanPreviewRevision;
         private static string _pendingAutoScanCompletionMessage = string.Empty;
         private static float _networkDependencyScanTimer;
+        private static bool _networkDependencyScanRunning;
+        private static int _networkDependencyScanAssetCount;
+        private static int _networkDependencyScanAssetIndex;
+        private static int _networkDependencyScanRemovalCount;
         private static CrossingPlacementAsset[] ClearPlacementAssets = new CrossingPlacementAsset[4096];
         private static CrossingPlacementAsset[] NetworkDependencyAssetBuffer = new CrossingPlacementAsset[NetworkDependencyAssetBufferSize];
         private static int[] NetworkDependencyRemovalIds = new int[NetworkDependencyAssetBufferSize];
@@ -1287,7 +1291,13 @@ namespace PedestrianCrossingToolkit
                 if (NetworkDependencySnapshots.Count > 0)
                     NetworkDependencySnapshots.Clear();
 
-                _networkDependencyScanTimer = 0f;
+                ResetNetworkDependencyScan();
+                return;
+            }
+
+            if (_networkDependencyScanRunning)
+            {
+                StepNetworkDependencyScan();
                 return;
             }
 
@@ -1296,7 +1306,8 @@ namespace PedestrianCrossingToolkit
                 return;
 
             _networkDependencyScanTimer = 0f;
-            ScanNetworkDependencies();
+            StartNetworkDependencyScan();
+            StepNetworkDependencyScan();
         }
 
         private static bool IsPlacementPlanStale(CrossingPlacementPlan stored, CrossingPlacementPlan current)
@@ -1410,23 +1421,41 @@ namespace PedestrianCrossingToolkit
             _validationProblemRevision++;
         }
 
-        private static void ScanNetworkDependencies()
+        private static void StartNetworkDependencyScan()
         {
             EnsureRegistryProcessingCapacity();
-            int count = CrossingPlacementRegistry.CopyTo(NetworkDependencyAssetBuffer);
-            int removalCount = 0;
+            _networkDependencyScanAssetCount = CrossingPlacementRegistry.CopyTo(NetworkDependencyAssetBuffer);
+            _networkDependencyScanAssetIndex = 0;
+            _networkDependencyScanRemovalCount = 0;
             StaleNetworkDependencySnapshotIds.Clear();
             foreach (int assetId in NetworkDependencySnapshots.Keys)
                 StaleNetworkDependencySnapshotIds.Add(assetId);
 
-            for (int i = 0; i < count; i++)
+            _networkDependencyScanRunning = true;
+        }
+
+        private static void StepNetworkDependencyScan()
+        {
+            if (!_networkDependencyScanRunning)
+                return;
+
+            if (_networkDependencyScanAssetIndex < _networkDependencyScanAssetCount)
             {
-                CrossingPlacementAsset asset = NetworkDependencyAssetBuffer[i];
-                NetworkDependencyAssetBuffer[i] = CrossingPlacementAsset.None;
+                int index = _networkDependencyScanAssetIndex++;
+                CrossingPlacementAsset asset = NetworkDependencyAssetBuffer[index];
+                NetworkDependencyAssetBuffer[index] = CrossingPlacementAsset.None;
                 if (asset.Id == 0)
-                    continue;
+                    return;
 
                 StaleNetworkDependencySnapshotIds.Remove(asset.Id);
+                CrossingPlacementAsset liveAsset;
+                if (!CrossingPlacementRegistry.TryGetAssetById(asset.Id, out liveAsset))
+                {
+                    NetworkDependencySnapshots.Remove(asset.Id);
+                    return;
+                }
+
+                asset = liveAsset;
                 string removalReason;
                 if (ShouldAutoRemoveForNetworkDependencyChange(asset, out removalReason))
                 {
@@ -1438,16 +1467,33 @@ namespace PedestrianCrossingToolkit
                               + asset.Placement.SegmentId
                               + " reason="
                               + removalReason);
-                    AddNetworkDependencyRemoval(asset.Id, ref removalCount);
+                    AddNetworkDependencyRemoval(asset.Id, ref _networkDependencyScanRemovalCount);
                 }
+
+                return;
             }
 
             for (int i = 0; i < StaleNetworkDependencySnapshotIds.Count; i++)
                 NetworkDependencySnapshots.Remove(StaleNetworkDependencySnapshotIds[i]);
             StaleNetworkDependencySnapshotIds.Clear();
 
+            int removalCount = _networkDependencyScanRemovalCount;
+            ResetNetworkDependencyScan();
             if (removalCount > 0)
                 ScheduleNetworkDependencyCleanup(removalCount);
+        }
+
+        private static void ResetNetworkDependencyScan()
+        {
+            for (int i = _networkDependencyScanAssetIndex; i < _networkDependencyScanAssetCount; i++)
+                NetworkDependencyAssetBuffer[i] = CrossingPlacementAsset.None;
+
+            _networkDependencyScanTimer = 0f;
+            _networkDependencyScanRunning = false;
+            _networkDependencyScanAssetCount = 0;
+            _networkDependencyScanAssetIndex = 0;
+            _networkDependencyScanRemovalCount = 0;
+            StaleNetworkDependencySnapshotIds.Clear();
         }
 
         private static bool ShouldAutoRemoveForNetworkDependencyChange(CrossingPlacementAsset asset, out string reason)
@@ -2822,10 +2868,9 @@ namespace PedestrianCrossingToolkit
             CrossingPlacementRegistry.Reset();
             CrossingPlacementRegistry.SetAutoRebuildBuiltStructures(false);
             NetworkDependencySnapshots.Clear();
-            StaleNetworkDependencySnapshotIds.Clear();
             ResetScheduledValidationSchedule();
             ClearValidationProblemAssets();
-            _networkDependencyScanTimer = 0f;
+            ResetNetworkDependencyScan();
             LastAsset = CrossingPlacementAsset.None;
             LastPlacement = CrossingPlacementRecord.None;
             LastPlacementPlan = CrossingPlacementPlan.Invalid;
@@ -2881,9 +2926,8 @@ namespace PedestrianCrossingToolkit
             PedestrianCrossingAutoScanProgressPanel.HidePanel();
             PedestrianCrossingRoadsTab.RefreshInstance();
             ClearAutoScanPreviewPlan(false);
-            _networkDependencyScanTimer = 0f;
+            ResetNetworkDependencyScan();
             NetworkDependencySnapshots.Clear();
-            StaleNetworkDependencySnapshotIds.Clear();
             ResetScheduledValidationSchedule();
             ClearValidationProblemAssets();
             PedestrianCrossingToolkitApi.ResetForLevelChange();
@@ -2939,9 +2983,8 @@ namespace PedestrianCrossingToolkit
             PedestrianCrossingAutoScanProgressPanel.HidePanel();
             PedestrianCrossingRoadsTab.RefreshInstance();
             ClearAutoScanPreviewPlan(false);
-            _networkDependencyScanTimer = 0f;
+            ResetNetworkDependencyScan();
             NetworkDependencySnapshots.Clear();
-            StaleNetworkDependencySnapshotIds.Clear();
             ResetScheduledValidationSchedule();
             ClearValidationProblemAssets();
             PedestrianCrossingToolkitApi.ResetForLevelChange();
