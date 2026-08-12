@@ -9,10 +9,12 @@ namespace PedestrianCrossingToolkit
         public const string OwnerId = "PedestrianCrossingToolkit";
 
         private const string AutoScanRequestId = "auto-scan-observation";
+        private const string AutoScanBuildRequestId = "auto-scan-build";
         private const string LoadRebuildRequestId = "saved-crossing-rehydration";
         private const string ValidationRequestId = "scheduled-crossing-validation";
 
         private static string _autoScanTicket;
+        private static string _autoScanBuildTicket;
         private static string _loadRebuildTicket;
         private static string _validationTicket;
         private static bool _available;
@@ -122,6 +124,44 @@ namespace PedestrianCrossingToolkit
             }
         }
 
+        public static bool TryQueueAutoScanBuild(
+            Func<bool> step,
+            Action completed,
+            Action<Exception> failed)
+        {
+            if (!_available || step == null)
+                return false;
+
+            Cancel(ref _autoScanBuildTicket, "Auto Scan build");
+            try
+            {
+                _autoScanBuildTicket = ScratchysScanManager.QueueMainThreadScan(
+                    OwnerId,
+                    AutoScanBuildRequestId,
+                    ScratchysScanManager.PlayerRequestedPriority,
+                    step,
+                    delegate
+                    {
+                        _autoScanBuildTicket = null;
+                        if (completed != null)
+                            completed();
+                    },
+                    delegate(Exception exception)
+                    {
+                        _autoScanBuildTicket = null;
+                        if (failed != null)
+                            failed(exception);
+                    });
+                return !string.IsNullOrEmpty(_autoScanBuildTicket);
+            }
+            catch (Exception exception)
+            {
+                _available = false;
+                LogFallback("Auto Scan build request submission failed", exception);
+                return false;
+            }
+        }
+
         public static bool TryQueueScheduledValidation(
             Func<bool> step,
             Action completed,
@@ -175,6 +215,7 @@ namespace PedestrianCrossingToolkit
             }
 
             _autoScanTicket = null;
+            _autoScanBuildTicket = null;
             _loadRebuildTicket = null;
             _validationTicket = null;
             _available = false;

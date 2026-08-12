@@ -12,12 +12,15 @@ namespace PedestrianCrossingToolkit
         private static CrossingLandingConnectorWorkOrder[] ConnectorRenderBuffer = new CrossingLandingConnectorWorkOrder[512];
         private static CrossingLandingAccessAssetWorkOrder[] AccessAssetRenderBuffer = new CrossingLandingAccessAssetWorkOrder[512];
         private static CrossingPlacementAsset[] CrossingHighlightRenderBuffer = new CrossingPlacementAsset[2048];
+        private static float[] CrossingSummaryScoreBuffer = new float[2048];
+        private static Rect[] CrossingSummaryRectBuffer = new Rect[2048];
         private static CrossingPlacementAsset[] ValidationProblemRenderBuffer = new CrossingPlacementAsset[512];
         private static readonly CrossingPlacementRecord[] AutoScanPreviewRenderBuffer = new CrossingPlacementRecord[CrossingAutoScanPlanner.MaxPlannedPlacements];
         private static readonly int[] AutoScanPreviewIndexRenderBuffer = new int[CrossingAutoScanPlanner.MaxPlannedPlacements];
         private static readonly List<string> ConnectorRenderKeys = new List<string>();
         private static readonly List<string> ConnectivityRenderKeys = new List<string>();
         private static readonly List<Rect> CrossingSummaryBlockingRects = new List<Rect>();
+        private static readonly List<Rect> CrossingSummaryDrawnRects = new List<Rect>();
         private static readonly List<GameObject> RouteWorldVisuals = new List<GameObject>();
         private static readonly List<GameObject> CrossingHighlightWorldVisuals = new List<GameObject>();
         private static readonly Color SubwayRoutePreviewColor = new Color(0.48f, 0.88f, 1f, 0.76f);
@@ -42,6 +45,8 @@ namespace PedestrianCrossingToolkit
         private const float CrossingSummaryUiOcclusionPadding = 2f;
         private const float CrossingSummaryUiOcclusionMinWidth = 24f;
         private const float CrossingSummaryUiOcclusionMinHeight = 18f;
+        private const float CrossingSummaryPanelPadding = 6f;
+        private const float CrossingSummaryDiagnosticsSeconds = 10f;
         private const float RoadToolWarningWidth = 310f;
         private const float RoadToolWarningMinHeight = 70f;
         private const float RoadToolWarningCursorOffsetX = 22f;
@@ -107,6 +112,12 @@ namespace PedestrianCrossingToolkit
         private int _roadToolWarningCachedRegistryRevision = -1;
         private ushort _roadToolWarningCachedSegmentId;
         private int _roadToolWarningCachedCrossingCount;
+        private float _crossingSummaryDiagnosticsElapsed;
+        private int _crossingSummaryDiagnosticsMaxCandidates;
+        private int _crossingSummaryDiagnosticsMaxDrawn;
+        private int _crossingSummaryDiagnosticsMaxOccluded;
+        private readonly List<CrossingPassiveSummaryPanel> _crossingSummaryPanels =
+            new List<CrossingPassiveSummaryPanel>();
 
         public static void CreateIfNeeded(UIView view)
         {
@@ -124,6 +135,7 @@ namespace PedestrianCrossingToolkit
 
             Instance.ClearRouteWorldVisuals(true);
             Instance.ClearCrossingHighlightWorldVisuals(true);
+            Instance.DestroyCrossingSummaryPanels();
             UnityEngine.Object.Destroy(Instance);
             Instance = null;
         }
@@ -138,8 +150,24 @@ namespace PedestrianCrossingToolkit
 
         private void Update()
         {
+            long diagnosticsStartedAt =
+                PedestrianCrossingPerformanceDiagnostics.BeginCallbackSample();
+            try
+            {
+                UpdateCore();
+            }
+            finally
+            {
+                PedestrianCrossingPerformanceDiagnostics.EndOverlayUpdate(
+                    diagnosticsStartedAt);
+            }
+        }
+
+        private void UpdateCore()
+        {
             if (!PedestrianCrossingToolkitState.Enabled || !PedestrianCrossingToolkitPanel.IsWorkspaceOpen)
             {
+                HideCrossingSummaryPanels();
                 ClearRouteWorldVisuals();
                 ClearCrossingHighlightWorldVisuals();
                 _hasWorldVisualCameraSnapshot = false;
@@ -151,6 +179,7 @@ namespace PedestrianCrossingToolkit
             Camera camera = Camera.main;
             if (camera == null)
             {
+                HideCrossingSummaryPanels();
                 ClearRouteWorldVisuals();
                 ClearCrossingHighlightWorldVisuals();
                 _hasWorldVisualCameraSnapshot = false;
@@ -161,6 +190,7 @@ namespace PedestrianCrossingToolkit
             bool crossingTabOpen = PedestrianCrossingRoadsTab.IsOpen;
             PedestrianToolMode activeMode = PedestrianCrossingToolkitState.ActiveMode;
             int registryRevision = CrossingPlacementRegistry.Revision;
+            UpdateCrossingDetails(camera);
             CrossingPlacementRecord currentPreview = PedestrianCrossingToolkitState.LastPreview;
             if (ShouldShowRouteWorldVisuals())
             {
@@ -217,6 +247,8 @@ namespace PedestrianCrossingToolkit
             ManagerCapacity.EnsureArrayCapacity(ref ConnectorRenderBuffer, CrossingLandingConnectorPlanner.WorkOrderCount);
             ManagerCapacity.EnsureArrayCapacity(ref AccessAssetRenderBuffer, CrossingLandingConnectorPlanner.AccessAssetCount);
             ManagerCapacity.EnsureArrayCapacity(ref CrossingHighlightRenderBuffer, CrossingPlacementRegistry.Count);
+            ManagerCapacity.EnsureArrayCapacity(ref CrossingSummaryScoreBuffer, CrossingPlacementRegistry.Count);
+            ManagerCapacity.EnsureArrayCapacity(ref CrossingSummaryRectBuffer, CrossingPlacementRegistry.Count);
             ManagerCapacity.EnsureArrayCapacity(ref ValidationProblemRenderBuffer, PedestrianCrossingToolkitState.ValidationProblemAssetCount);
         }
 
@@ -271,19 +303,29 @@ namespace PedestrianCrossingToolkit
             if (e == null || e.type != EventType.Repaint)
                 return;
 
+            long diagnosticsStartedAt =
+                PedestrianCrossingPerformanceDiagnostics.BeginCallbackSample();
+            try
+            {
+                OnGUIRepaint();
+            }
+            finally
+            {
+                PedestrianCrossingPerformanceDiagnostics.EndOverlayRepaint(
+                    diagnosticsStartedAt);
+            }
+        }
+
+        private void OnGUIRepaint()
+        {
             Camera camera = Camera.main;
             if (camera == null)
                 return;
 
+            EnsureRenderBufferCapacity();
+
             Color oldColor = GUI.color;
             DrawRoadToolCrossingWarning(camera);
-
-            if (PedestrianCrossingRoadsTab.IsOpen
-                && GetOverlayCameraSize(camera) < CrossingHighlightMinCameraSize
-                && PrepareCrossingSummaryBlockingRects())
-            {
-                DrawCrossingDetails(camera, CrossingSummaryBlockingRects);
-            }
 
             if (!PedestrianCrossingToolkitPanel.IsWorkspaceOpen)
             {
@@ -504,9 +546,32 @@ namespace PedestrianCrossingToolkit
                    && GetOverlayCameraSize(camera) >= CrossingHighlightMinCameraSize;
         }
 
-        private static void DrawCrossingDetails(Camera camera, List<Rect> blockingRects)
+        private void UpdateCrossingDetails(Camera camera)
+        {
+            if (!PedestrianCrossingRoadsTab.IsOpen
+                || GetOverlayCameraSize(camera) >= CrossingHighlightMinCameraSize
+                || !PrepareCrossingSummaryBlockingRects())
+            {
+                HideCrossingSummaryPanels();
+                return;
+            }
+
+            UIView view = UIView.GetAView();
+            if (view == null)
+            {
+                HideCrossingSummaryPanels();
+                return;
+            }
+
+            DrawCrossingDetails(camera, CrossingSummaryBlockingRects, view);
+        }
+
+        private void DrawCrossingDetails(Camera camera, List<Rect> blockingRects, UIView view)
         {
             int count = CrossingPlacementRegistry.CopyTo(CrossingHighlightRenderBuffer);
+            int candidateCount = 0;
+            Vector3 mouse = Input.mousePosition;
+            Vector2 mouseGui = new Vector2(mouse.x, Screen.height - mouse.y);
             for (int i = 0; i < count; i++)
             {
                 CrossingPlacementAsset asset = CrossingHighlightRenderBuffer[i];
@@ -529,10 +594,137 @@ namespace PedestrianCrossingToolkit
                 if (OverlapsAny(summaryRect, blockingRects))
                     continue;
 
-                PedestrianCrossingInteractionTool.DrawPassiveCrossingDetails(
-                    summaryRect,
-                    asset);
+                CrossingHighlightRenderBuffer[candidateCount] = asset;
+                CrossingSummaryRectBuffer[candidateCount] = summaryRect;
+                Vector2 crossingGui = new Vector2(screen.x, Screen.height - screen.y);
+                CrossingSummaryScoreBuffer[candidateCount] = (crossingGui - mouseGui).sqrMagnitude;
+                candidateCount++;
             }
+
+            CrossingSummaryDrawnRects.Clear();
+            int panelBudget = GetCrossingSummaryPanelBudget();
+            EnsureCrossingSummaryPanelPool(view, panelBudget);
+            panelBudget = Mathf.Min(panelBudget, _crossingSummaryPanels.Count);
+            int drawn = 0;
+            int occluded = 0;
+            for (int rank = 0; rank < candidateCount && drawn < panelBudget; rank++)
+            {
+                int best = rank;
+                for (int candidate = rank + 1; candidate < candidateCount; candidate++)
+                {
+                    if (CrossingSummaryScoreBuffer[candidate] < CrossingSummaryScoreBuffer[best])
+                        best = candidate;
+                }
+
+                if (best != rank)
+                    SwapCrossingSummaryCandidates(rank, best);
+
+                Rect summaryRect = CrossingSummaryRectBuffer[rank];
+                if (OverlapsAny(summaryRect, CrossingSummaryDrawnRects))
+                {
+                    occluded++;
+                    continue;
+                }
+
+                _crossingSummaryPanels[drawn].Show(
+                    summaryRect,
+                    view,
+                    CrossingHighlightRenderBuffer[rank]);
+                CrossingSummaryDrawnRects.Add(new Rect(
+                    summaryRect.x - CrossingSummaryPanelPadding,
+                    summaryRect.y - CrossingSummaryPanelPadding,
+                    summaryRect.width + CrossingSummaryPanelPadding * 2f,
+                    summaryRect.height + CrossingSummaryPanelPadding * 2f));
+                drawn++;
+            }
+
+            HideCrossingSummaryPanelsFrom(drawn);
+
+            RecordCrossingSummaryDiagnostics(candidateCount, drawn, occluded, panelBudget);
+        }
+
+        private void EnsureCrossingSummaryPanelPool(UIView view, int panelBudget)
+        {
+            while (_crossingSummaryPanels.Count < panelBudget)
+            {
+                CrossingPassiveSummaryPanel panel =
+                    view.AddUIComponent(typeof(CrossingPassiveSummaryPanel)) as CrossingPassiveSummaryPanel;
+                if (panel == null)
+                    break;
+                panel.Initialize();
+                _crossingSummaryPanels.Add(panel);
+            }
+        }
+
+        private void HideCrossingSummaryPanels()
+        {
+            HideCrossingSummaryPanelsFrom(0);
+        }
+
+        private void HideCrossingSummaryPanelsFrom(int first)
+        {
+            for (int i = Mathf.Max(0, first); i < _crossingSummaryPanels.Count; i++)
+            {
+                CrossingPassiveSummaryPanel panel = _crossingSummaryPanels[i];
+                if (panel != null)
+                    panel.HidePanel();
+            }
+        }
+
+        private void DestroyCrossingSummaryPanels()
+        {
+            for (int i = 0; i < _crossingSummaryPanels.Count; i++)
+            {
+                CrossingPassiveSummaryPanel panel = _crossingSummaryPanels[i];
+                if (panel != null)
+                    UnityEngine.Object.Destroy(panel.gameObject);
+            }
+
+            _crossingSummaryPanels.Clear();
+        }
+
+        private static int GetCrossingSummaryPanelBudget()
+        {
+            int screenDerived = Mathf.Max(1, (Screen.width * Screen.height) / (400 * 220));
+            return Mathf.Clamp(screenDerived, 3, 8);
+        }
+
+        private static void SwapCrossingSummaryCandidates(int first, int second)
+        {
+            CrossingPlacementAsset asset = CrossingHighlightRenderBuffer[first];
+            CrossingHighlightRenderBuffer[first] = CrossingHighlightRenderBuffer[second];
+            CrossingHighlightRenderBuffer[second] = asset;
+
+            Rect rect = CrossingSummaryRectBuffer[first];
+            CrossingSummaryRectBuffer[first] = CrossingSummaryRectBuffer[second];
+            CrossingSummaryRectBuffer[second] = rect;
+
+            float score = CrossingSummaryScoreBuffer[first];
+            CrossingSummaryScoreBuffer[first] = CrossingSummaryScoreBuffer[second];
+            CrossingSummaryScoreBuffer[second] = score;
+        }
+
+        private void RecordCrossingSummaryDiagnostics(int candidates, int drawn, int occluded, int budget)
+        {
+            _crossingSummaryDiagnosticsMaxCandidates = Mathf.Max(_crossingSummaryDiagnosticsMaxCandidates, candidates);
+            _crossingSummaryDiagnosticsMaxDrawn = Mathf.Max(_crossingSummaryDiagnosticsMaxDrawn, drawn);
+            _crossingSummaryDiagnosticsMaxOccluded = Mathf.Max(_crossingSummaryDiagnosticsMaxOccluded, occluded);
+            _crossingSummaryDiagnosticsElapsed += Mathf.Max(0f, Time.unscaledDeltaTime);
+            if (_crossingSummaryDiagnosticsElapsed < CrossingSummaryDiagnosticsSeconds)
+                return;
+
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Crossing summary overlay budget: candidates="
+                      + _crossingSummaryDiagnosticsMaxCandidates
+                      + " drawn="
+                      + _crossingSummaryDiagnosticsMaxDrawn
+                      + " occluded="
+                      + _crossingSummaryDiagnosticsMaxOccluded
+                      + " budget="
+                      + budget);
+            _crossingSummaryDiagnosticsElapsed = 0f;
+            _crossingSummaryDiagnosticsMaxCandidates = 0;
+            _crossingSummaryDiagnosticsMaxDrawn = 0;
+            _crossingSummaryDiagnosticsMaxOccluded = 0;
         }
 
         private bool PrepareCrossingSummaryBlockingRects()
@@ -551,7 +743,7 @@ namespace PedestrianCrossingToolkit
             if (view == null)
                 return false;
 
-            Vector2 uiResolution = view.GetScreenResolution();
+            Vector2 uiResolution = new Vector2(view.fixedWidth, view.fixedHeight);
             float now = Time.unscaledTime;
             if (_crossingSummaryUiCacheReady
                 && now < _nextCrossingSummaryUiRefreshTime
@@ -592,6 +784,9 @@ namespace PedestrianCrossingToolkit
                 return;
             }
 
+            if (component.GetComponentInParent<CrossingPassiveSummaryPanel>() != null)
+                return;
+
             UIPanel panel = component as UIPanel;
             if (panel == null || string.IsNullOrEmpty(panel.backgroundSprite))
                 return;
@@ -625,9 +820,8 @@ namespace PedestrianCrossingToolkit
             if (view == null || component == null)
                 return new Rect();
 
-            Vector2 uiResolution = view.GetScreenResolution();
-            float scaleX = uiResolution.x > 0f ? Screen.width / uiResolution.x : 1f;
-            float scaleY = uiResolution.y > 0f ? Screen.height / uiResolution.y : 1f;
+            float scaleX = view.fixedWidth > 0f ? Screen.width / view.fixedWidth : 1f;
+            float scaleY = view.fixedHeight > 0f ? Screen.height / view.fixedHeight : 1f;
             Vector3 position = component.absolutePosition;
             return new Rect(
                 position.x * scaleX,

@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using ColossalFramework.Math;
 using HarmonyLib;
 using UnityEngine;
 
@@ -9,6 +10,7 @@ namespace PedestrianCrossingToolkit
     {
         private const string HarmonyId = "ScratchyBald.PedestrianCrossingToolkit.Bulldoze";
         private const float PickRadiusPixels = 20f;
+        private const float PickWorldSafetyPadding = 16f;
 
         private static Harmony _harmony;
         private static FieldInfo _hoverInstanceField;
@@ -115,6 +117,26 @@ namespace PedestrianCrossingToolkit
 
         private static bool OnToolUpdatePrefix(BulldozeTool __instance)
         {
+            if (_captureUntilMouseUp)
+            {
+                if (_operational && __instance != null)
+                {
+                    try
+                    {
+                        ClearVanillaTargets(__instance);
+                    }
+                    catch (Exception exception)
+                    {
+                        DisableOperationalBoundary("gesture target-clear", exception);
+                    }
+                }
+
+                _hoveredAssetId = 0;
+                if (!Input.GetMouseButton(0))
+                    _captureUntilMouseUp = false;
+                return false;
+            }
+
             if (!_operational || !PedestrianCrossingToolkitState.Enabled || __instance == null)
             {
                 _hoveredAssetId = 0;
@@ -123,15 +145,6 @@ namespace PedestrianCrossingToolkit
 
             try
             {
-                if (_captureUntilMouseUp)
-                {
-                    ClearVanillaTargets(__instance);
-                    _hoveredAssetId = 0;
-                    if (!Input.GetMouseButton(0))
-                        _captureUntilMouseUp = false;
-                    return false;
-                }
-
                 ToolController controller = ToolsModifierControl.toolController;
                 Camera camera = Camera.main;
                 CrossingPlacementAsset asset = CrossingPlacementAsset.None;
@@ -152,10 +165,12 @@ namespace PedestrianCrossingToolkit
                 }
 
                 _hoveredAssetId = asset.Id;
-                ClearVanillaTargets(__instance);
-                if (Input.GetMouseButtonDown(0))
-                {
+                bool mouseDown = Input.GetMouseButtonDown(0);
+                if (mouseDown)
                     _captureUntilMouseUp = true;
+                ClearVanillaTargets(__instance);
+                if (mouseDown)
+                {
                     PedestrianCrossingToolkitState.ConfirmRemovalByAssetId(asset.Id);
                     ClearVanillaTargets(__instance);
                     _hoveredAssetId = 0;
@@ -166,12 +181,7 @@ namespace PedestrianCrossingToolkit
             catch (Exception exception)
             {
                 bool suppressCurrentGesture = _captureUntilMouseUp;
-                _operational = false;
-                _captureUntilMouseUp = false;
-                _hoveredAssetId = 0;
-                Debug.LogError(
-                    "[PedestrianCrossingToolkit] Vanilla Bulldoze crossing boundary disabled after an update failure; vanilla handling resumed: "
-                    + exception);
+                DisableOperationalBoundary("update", exception);
                 return !suppressCurrentGesture;
             }
         }
@@ -181,42 +191,75 @@ namespace PedestrianCrossingToolkit
             Vector2 screenPosition,
             out CrossingPlacementAsset asset)
         {
+            Vector3 worldPosition;
+            float worldRadius;
+            if (!TryGetPointerTerrainPosition(
+                    camera,
+                    screenPosition,
+                    out worldPosition,
+                    out worldRadius))
+            {
+                asset = CrossingPlacementAsset.None;
+                return false;
+            }
+
             if (CrossingPlacementRegistry.TryGetAssetNearScreen(
                     camera,
                     screenPosition,
+                    worldPosition,
+                    worldRadius,
                     PickRadiusPixels,
                     out asset))
             {
                 return true;
             }
 
-            ManagerCapacity.EnsureArrayCapacity(
-                ref _accessPickBuffer,
-                CrossingLandingConnectorPlanner.AccessAssetCount);
-            int accessCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(_accessPickBuffer);
-            float bestDistanceSqr = PickRadiusPixels * PickRadiusPixels;
-            int bestAssetId = 0;
-            int max = Mathf.Min(accessCount, _accessPickBuffer.Length);
-            for (int i = 0; i < max; i++)
-            {
-                CrossingLandingAccessAssetWorkOrder access = _accessPickBuffer[i];
-                Vector3 first;
-                Vector3 second;
-                GetAccessFootprintSpan(access, out first, out second);
-                float distanceSqr = CrossingPlacementRegistry.GetScreenSegmentDistanceSqr(
-                    camera,
-                    screenPosition,
-                    first,
-                    second);
-                if (distanceSqr >= bestDistanceSqr)
-                    continue;
+            return false;
+        }
 
-                bestDistanceSqr = distanceSqr;
-                bestAssetId = access.AssetId;
+        private static bool TryGetPointerTerrainPosition(
+            Camera camera,
+            Vector2 screenPosition,
+            out Vector3 worldPosition,
+            out float worldRadius)
+        {
+            worldPosition = Vector3.zero;
+            worldRadius = 0f;
+            if (camera == null)
+                return false;
+
+            Ray ray = camera.ScreenPointToRay(screenPosition);
+            TerrainManager terrainManager = TerrainManager.instance;
+            bool hasPosition = terrainManager != null
+                               && terrainManager.RayCast(
+                                   new Segment3(
+                                       ray.origin,
+                                       ray.origin + ray.direction * camera.farClipPlane),
+                                   out worldPosition);
+            if (!hasPosition)
+            {
+                Plane ground = new Plane(Vector3.up, Vector3.zero);
+                float distance;
+                if (!ground.Raycast(ray, out distance)
+                    || distance < 0f
+                    || distance > camera.farClipPlane)
+                {
+                    return false;
+                }
+
+                worldPosition = ray.GetPoint(distance);
             }
 
-            return bestAssetId != 0
-                   && CrossingPlacementRegistry.TryGetAssetById(bestAssetId, out asset);
+            Vector3 screen = camera.WorldToScreenPoint(worldPosition);
+            if (screen.z <= 0f)
+                return false;
+
+            Vector3 offsetWorld = camera.ScreenToWorldPoint(
+                new Vector3(screenPosition.x + PickRadiusPixels, screenPosition.y, screen.z));
+            Vector3 horizontal = offsetWorld - worldPosition;
+            horizontal.y = 0f;
+            worldRadius = Mathf.Max(PickWorldSafetyPadding, horizontal.magnitude + PickWorldSafetyPadding);
+            return true;
         }
 
         private static void ClearVanillaTargets(BulldozeTool tool)
@@ -229,8 +272,11 @@ namespace PedestrianCrossingToolkit
 
         private static bool RenderOverlayPrefix(DefaultTool __instance)
         {
-            if (!_operational || !(__instance is BulldozeTool))
+            if (!(__instance is BulldozeTool))
                 return true;
+
+            if (!_operational)
+                return !_captureUntilMouseUp;
 
             if (!_captureUntilMouseUp && _hoveredAssetId == 0)
                 return true;
@@ -242,13 +288,8 @@ namespace PedestrianCrossingToolkit
             }
             catch (Exception exception)
             {
-                _operational = false;
-                _captureUntilMouseUp = false;
-                _hoveredAssetId = 0;
-                Debug.LogError(
-                    "[PedestrianCrossingToolkit] Vanilla Bulldoze overlay boundary disabled after a render failure; vanilla rendering resumed: "
-                    + exception);
-                return true;
+                DisableOperationalBoundary("overlay prefix", exception);
+                return !_captureUntilMouseUp;
             }
         }
 
@@ -257,27 +298,46 @@ namespace PedestrianCrossingToolkit
             if (!_operational || !(__instance is BulldozeTool) || cameraInfo == null)
                 return;
 
-            CrossingPlacementAsset asset;
-            if (!TryGetHoveredAsset(out asset))
-                return;
+            try
+            {
+                CrossingPlacementAsset asset;
+                if (!TryGetHoveredAsset(out asset))
+                    return;
 
-            BuildingInfo selector = GetOrCreateSelectorPrefab();
-            if (selector == null)
-                return;
+                BuildingInfo selector = GetOrCreateSelectorPrefab();
+                if (selector == null)
+                    return;
 
-            Vector3 center;
-            float angle;
-            int width;
-            ResolveSelectorFootprint(asset, out center, out angle, out width);
-            selector.m_cellWidth = width;
-            selector.m_cellLength = 1;
-            selector.m_size = new Vector3(width * 8f, 1f, 8f);
+                Vector3 center;
+                float angle;
+                int width;
+                ResolveSelectorFootprint(asset, out center, out angle, out width);
+                selector.m_cellWidth = width;
+                selector.m_cellLength = 1;
+                selector.m_size = new Vector3(width * 8f, 1f, 8f);
 
-            Color color = (Color)_getToolColorMethod.Invoke(
-                __instance,
-                new object[] { false, true });
-            BuildingTool.RenderOverlay(cameraInfo, selector, 0, center, angle, color, false);
-            RenderAccessFootprintOverlays(cameraInfo, selector, asset.Id, color);
+                Color color = (Color)_getToolColorMethod.Invoke(
+                    __instance,
+                    new object[] { false, true });
+                BuildingTool.RenderOverlay(cameraInfo, selector, 0, center, angle, color, false);
+                RenderAccessFootprintOverlays(cameraInfo, selector, asset.Id, color);
+            }
+            catch (Exception exception)
+            {
+                DisableOperationalBoundary("overlay postfix", exception);
+            }
+        }
+
+        private static void DisableOperationalBoundary(string stage, Exception exception)
+        {
+            _operational = false;
+            _hoveredAssetId = 0;
+            DestroySelectorPrefab();
+            Debug.LogError(
+                "[PedestrianCrossingToolkit] Vanilla Bulldoze crossing boundary disabled after a "
+                + stage
+                + " failure; vanilla handling will resume after any captured mouse gesture ends: "
+                + exception);
         }
 
         private static void RenderAccessFootprintOverlays(

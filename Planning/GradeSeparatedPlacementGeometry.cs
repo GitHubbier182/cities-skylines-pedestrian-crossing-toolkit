@@ -38,6 +38,14 @@ namespace PedestrianCrossingToolkit
 
         public static bool TryBuild(CrossingPlacementAsset asset, out GradeSeparatedPlacementGeometry geometry)
         {
+            return TryBuild(asset, out geometry, true);
+        }
+
+        public static bool TryBuild(
+            CrossingPlacementAsset asset,
+            out GradeSeparatedPlacementGeometry geometry,
+            bool emitAdvancedDiagnostics)
+        {
             geometry = default(GradeSeparatedPlacementGeometry);
             if (!asset.Plan.IsValid || !IsGradeSeparated(asset.Plan.ApplicationKind))
                 return false;
@@ -80,10 +88,13 @@ namespace PedestrianCrossingToolkit
             {
                 if (!forceOffRoadSubwayLandings && hasPedestrianLanes)
                 {
-                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade separated geometry rejected: unusable pedestrian lane extents for asset="
-                              + asset.Id
-                              + " segment="
-                              + asset.Placement.SegmentId);
+                    if (emitAdvancedDiagnostics)
+                    {
+                        PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade separated geometry rejected: unusable pedestrian lane extents for asset="
+                                  + asset.Id
+                                  + " segment="
+                                  + asset.Placement.SegmentId);
+                    }
                     return false;
                 }
 
@@ -95,16 +106,19 @@ namespace PedestrianCrossingToolkit
                 secondLateralOffset = landingHalfWidth;
                 usesLaneTargets = false;
                 endpointSource = forceOffRoadSubwayLandings ? "non-road-subway-landings" : "road-edge-landings";
-                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade separated geometry using off-road landing endpoints: asset="
-                          + asset.Id
-                          + " segment="
-                          + asset.Placement.SegmentId
-                          + " source="
-                          + endpointSource
-                          + " roadHalfWidth="
-                          + roadHalfWidth.ToString("0.0")
-                          + " setback="
-                          + RoadEdgeLandingSetback.ToString("0.0"));
+                if (emitAdvancedDiagnostics)
+                {
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade separated geometry using off-road landing endpoints: asset="
+                              + asset.Id
+                              + " segment="
+                              + asset.Placement.SegmentId
+                              + " source="
+                              + endpointSource
+                              + " roadHalfWidth="
+                              + roadHalfWidth.ToString("0.0")
+                              + " setback="
+                              + RoadEdgeLandingSetback.ToString("0.0"));
+                }
             }
 
             bool junction = false;
@@ -133,28 +147,31 @@ namespace PedestrianCrossingToolkit
             }
 
             geometry = new GradeSeparatedPlacementGeometry(linkKind, first, second, roadDirection, junction, usesLaneTargets);
-            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade separated geometry resolved: asset="
-                      + asset.Id
-                      + " segment="
-                      + asset.Placement.SegmentId
-                      + " kind="
-                      + linkKind
-                      + " junction="
-                      + junction
-                      + " center="
-                      + center
-                      + " roadDirection="
-                      + roadDirection
-                      + " lanes="
-                      + firstLateralOffset.ToString("0.00")
-                      + "/"
-                      + secondLateralOffset.ToString("0.00")
-                      + " source="
-                      + endpointSource
-                      + " first="
-                      + first
-                      + " second="
-                      + second);
+            if (emitAdvancedDiagnostics)
+            {
+                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade separated geometry resolved: asset="
+                          + asset.Id
+                          + " segment="
+                          + asset.Placement.SegmentId
+                          + " kind="
+                          + linkKind
+                          + " junction="
+                          + junction
+                          + " center="
+                          + center
+                          + " roadDirection="
+                          + roadDirection
+                          + " lanes="
+                          + firstLateralOffset.ToString("0.00")
+                          + "/"
+                          + secondLateralOffset.ToString("0.00")
+                          + " source="
+                          + endpointSource
+                          + " first="
+                          + first
+                          + " second="
+                          + second);
+            }
             return true;
         }
 

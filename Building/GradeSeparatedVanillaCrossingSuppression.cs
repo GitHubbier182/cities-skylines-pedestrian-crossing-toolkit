@@ -220,7 +220,7 @@ namespace PedestrianCrossingToolkit
             }
 
             GradeSeparatedPlacementGeometry geometry;
-            if (!GradeSeparatedPlacementGeometryResolver.TryBuild(asset, out geometry))
+            if (!GradeSeparatedPlacementGeometryResolver.TryBuild(asset, out geometry, false))
                 return false;
 
             NetManager netManager = NetManager.instance;

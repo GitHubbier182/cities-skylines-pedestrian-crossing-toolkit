@@ -82,6 +82,19 @@ namespace PedestrianCrossingToolkit
         private static int[] ValidationProblemAssetIds = new int[ValidationProblemAssetBufferSize];
         private static int[] ScheduledValidationProblemAssetIds = new int[ValidationProblemAssetBufferSize];
         private static readonly int[] AutoScanChangedAssetIds = new int[AutoScanChangedAssetBufferSize];
+        private static readonly int[] StagedAutoScanBuildAssetIds = new int[AutoScanChangedAssetBufferSize];
+        private static bool _stagedAutoScanBuildActive;
+        private static bool _stagedAutoScanBuildManaged;
+        private static int _stagedAutoScanBuildAssetCount;
+        private static int _stagedAutoScanBuildAssetIndex;
+        private static int _stagedAutoScanBuildBuilt;
+        private static int _stagedAutoScanBuildSkipped;
+        private static int _stagedAutoScanBuildFailed;
+        private static float _stagedAutoScanBuildStartedAt;
+        private static float _stagedAutoScanBuildWorkElapsedMs;
+        private static float _stagedAutoScanBuildWorstSliceMs;
+        private static string _stagedAutoScanBuildReason = string.Empty;
+        private static string _stagedAutoScanBuildCompletionStatus = string.Empty;
         private static readonly bool[] AutoScanPreviewAccepted = new bool[CrossingAutoScanPlanner.MaxPlannedPlacements];
         private static readonly Dictionary<int, NetworkDependencySnapshot> NetworkDependencySnapshots = new Dictionary<int, NetworkDependencySnapshot>();
         private static readonly List<int> StaleNetworkDependencySnapshotIds = new List<int>();
@@ -103,7 +116,7 @@ namespace PedestrianCrossingToolkit
 
         public static bool IsAutoScanObservationActive
         {
-            get { return _autoScanObservation != null || _autoScanFinalizing; }
+            get { return _autoScanObservation != null || _autoScanFinalizing || _stagedAutoScanBuildActive; }
         }
 
         public static bool AutoScanPreviewConfirmEnabled
@@ -603,6 +616,24 @@ namespace PedestrianCrossingToolkit
             if (!string.IsNullOrEmpty(adjustmentMessage))
                 StatusMessage = StatusMessage + " " + adjustmentMessage;
 
+            PedestrianCrossingLog.UnityInfo("Crossing placement confirmed: asset="
+                      + asset.Id
+                      + " mode="
+                      + placement.Mode
+                      + " segment="
+                      + placement.SegmentId
+                      + " segmentPosition="
+                      + placement.SegmentPosition.ToString("0.000")
+                      + " secondarySegment="
+                      + (placement.HasSecondaryPoint ? placement.SecondarySegmentId.ToString() : "none")
+                      + " targetNode="
+                      + plan.TargetNodeId
+                      + " replaced="
+                      + didReplace
+                      + " totalCrossings="
+                      + CrossingPlacementRegistry.Count
+                      + ".");
+
             PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Placement added: mode=" + placement.Mode
                       + " asset=" + asset.Id
                       + " replaced=" + didReplace
@@ -837,6 +868,13 @@ namespace PedestrianCrossingToolkit
 
         public static bool BeginAutoScanObservation()
         {
+            if (_stagedAutoScanBuildActive)
+            {
+                StatusMessage = "Auto Scan is still applying the previous crossing batch.";
+                PedestrianCrossingToolkitPanel.RefreshInstance();
+                return false;
+            }
+
             if (_autoScanFinalizing)
             {
                 StatusMessage = "Auto Scan is analysing measured pedestrian use.";
@@ -883,6 +921,13 @@ namespace PedestrianCrossingToolkit
 
         public static void ProcessAutoScanObservation(float realTimeDelta)
         {
+            if (_stagedAutoScanBuildActive)
+            {
+                if (!_stagedAutoScanBuildManaged && ProcessStagedAutoScanBuildStep())
+                    CompleteStagedAutoScanBuild();
+                return;
+            }
+
             if (_autoScanFinalizing)
             {
                 if (_autoScanFinalizationDelayUpdates > 0)
@@ -1280,6 +1325,9 @@ namespace PedestrianCrossingToolkit
 
         public static void ProcessNetworkDependencyChanges(float realTimeDelta)
         {
+            if (_stagedAutoScanBuildActive)
+                return;
+
             if (ProcessDeferredNetworkDependencyCleanup(realTimeDelta))
                 return;
 
@@ -2268,11 +2316,14 @@ namespace PedestrianCrossingToolkit
             }
             else
             {
-                SyncBuiltStructuresForChangedAssets(reason, AutoScanChangedAssetIds, changedAssetCount);
+                StageBuiltStructuresForChangedAssets(reason, AutoScanChangedAssetIds, changedAssetCount);
             }
 
             PedestrianCrossingToolkitPanel.RefreshInstance();
-            PedestrianCrossingLog.Info("Auto scan completed: added="
+            PedestrianCrossingLog.Info((fullRebuild
+                          ? "Auto scan completed: "
+                          : "Auto scan registry applied; staged construction started: ")
+                      + "added="
                       + added
                       + " removed="
                       + removed
@@ -2370,7 +2421,7 @@ namespace PedestrianCrossingToolkit
 
         private static void ShowPendingAutoScanCompletionSummary()
         {
-            if (string.IsNullOrEmpty(_pendingAutoScanCompletionMessage))
+            if (_stagedAutoScanBuildActive || string.IsNullOrEmpty(_pendingAutoScanCompletionMessage))
                 return;
 
             string message = _pendingAutoScanCompletionMessage;
@@ -2891,6 +2942,7 @@ namespace PedestrianCrossingToolkit
 
         public static void Reset()
         {
+            CancelStagedAutoScanBuild();
             CrossingApplicationEngine.RevertAppliedOperations("state-reset");
             int builtRemoved = CrossingPathBuilder.ClearBuiltPaths("state-reset");
             int signalRoadStatesRestored = RestoreSignalRoadStatesForClear("state-reset-post-built-clear");
@@ -2948,6 +3000,7 @@ namespace PedestrianCrossingToolkit
 
         public static void ResetForLevelUnload()
         {
+            CancelStagedAutoScanBuild();
             int builtForgotten = CrossingPathBuilder.ForgetBuiltPathsForLevelUnload("state-reset-level-unload");
             int suppressionForgotten = GradeSeparatedVanillaCrossingSuppression.ForgetStateForLevelUnload("state-reset-level-unload");
             CrossingApplicationEngine.ForgetStateForLevelUnload();
@@ -3221,6 +3274,205 @@ namespace PedestrianCrossingToolkit
         private static void SyncBuiltStructures(string reason, bool rebuildExisting)
         {
             SyncBuiltStructures(reason, rebuildExisting, 0);
+        }
+
+        private static void StageBuiltStructuresForChangedAssets(string reason, int[] changedAssetIds, int changedAssetCount)
+        {
+            if (changedAssetIds == null || changedAssetCount <= 0)
+            {
+                SyncBuiltStructuresForChangedAssets(reason, changedAssetIds, 0);
+                return;
+            }
+
+            ResetStagedAutoScanBuildState();
+            _stagedAutoScanBuildReason = string.IsNullOrEmpty(reason) ? "auto-scan" : reason;
+            _stagedAutoScanBuildAssetCount = Mathf.Min(changedAssetCount, StagedAutoScanBuildAssetIds.Length);
+            for (int i = 0; i < _stagedAutoScanBuildAssetCount; i++)
+            {
+                StagedAutoScanBuildAssetIds[i] = changedAssetIds[i];
+                changedAssetIds[i] = 0;
+            }
+
+            CrossingApplicationEngine.Refresh(_stagedAutoScanBuildReason);
+            SyncPathExecutionBoundary(_stagedAutoScanBuildReason);
+            try
+            {
+                CrossingPathBuilder.BeginBuildBatch(false);
+            }
+            catch (System.Exception exception)
+            {
+                Debug.LogError("[PedestrianCrossingToolkit] Could not start staged Auto Scan build; retaining registered crossings for validation: " + exception);
+                ResetStagedAutoScanBuildState();
+                return;
+            }
+
+            _stagedAutoScanBuildCompletionStatus = StatusMessage;
+            _stagedAutoScanBuildStartedAt = Time.realtimeSinceStartup;
+            _stagedAutoScanBuildActive = true;
+            _stagedAutoScanBuildManaged =
+                PedestrianCrossingScanCoordinator.TryQueueAutoScanBuild(
+                    ProcessStagedAutoScanBuildStep,
+                    CompleteStagedAutoScanBuild,
+                    FailManagedStagedAutoScanBuild);
+            StatusMessage = "Auto Scan is applying "
+                            + _stagedAutoScanBuildAssetCount
+                            + " crossing"
+                            + (_stagedAutoScanBuildAssetCount == 1 ? string.Empty : "s")
+                            + " without blocking the game.";
+            PedestrianCrossingToolkitPanel.RefreshInstance();
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Staged Auto Scan build started: reason="
+                      + _stagedAutoScanBuildReason
+                      + " assets="
+                      + _stagedAutoScanBuildAssetCount
+                      + " managed="
+                      + _stagedAutoScanBuildManaged);
+        }
+
+        private static bool ProcessStagedAutoScanBuildStep()
+        {
+            if (!_stagedAutoScanBuildActive)
+                return true;
+
+            if (_stagedAutoScanBuildAssetIndex >= _stagedAutoScanBuildAssetCount)
+                return true;
+
+            int assetIndex = _stagedAutoScanBuildAssetIndex++;
+            int assetId = StagedAutoScanBuildAssetIds[assetIndex];
+            StagedAutoScanBuildAssetIds[assetIndex] = 0;
+            float startedAt = Time.realtimeSinceStartup;
+            try
+            {
+                CrossingPlacementAsset asset;
+                if (assetId <= 0 || !CrossingPlacementRegistry.TryGetAssetById(assetId, out asset))
+                {
+                    _stagedAutoScanBuildSkipped++;
+                }
+                else
+                {
+                    int skipped;
+                    _stagedAutoScanBuildBuilt += CrossingPathBuilder.BuildPathsForAsset(assetId, out skipped);
+                    _stagedAutoScanBuildSkipped += skipped;
+                }
+            }
+            catch (System.Exception exception)
+            {
+                _stagedAutoScanBuildFailed++;
+                Debug.LogError("[PedestrianCrossingToolkit] Staged Auto Scan asset build failed: asset="
+                               + assetId
+                               + " index="
+                               + assetIndex
+                               + "/"
+                               + _stagedAutoScanBuildAssetCount
+                               + " error="
+                               + exception);
+            }
+
+            float elapsedMs = (Time.realtimeSinceStartup - startedAt) * 1000f;
+            _stagedAutoScanBuildWorkElapsedMs += elapsedMs;
+            _stagedAutoScanBuildWorstSliceMs = Mathf.Max(_stagedAutoScanBuildWorstSliceMs, elapsedMs);
+            if (elapsedMs >= 12f)
+            {
+                PedestrianCrossingLog.AdvancedWarning("Slow staged Auto Scan build slice: asset="
+                                 + assetId
+                                 + " elapsedMs="
+                                 + elapsedMs.ToString("0.0")
+                                 + " progress="
+                                 + _stagedAutoScanBuildAssetIndex
+                                 + "/"
+                                 + _stagedAutoScanBuildAssetCount);
+            }
+
+            return _stagedAutoScanBuildAssetIndex >= _stagedAutoScanBuildAssetCount;
+        }
+
+        private static void CompleteStagedAutoScanBuild()
+        {
+            if (!_stagedAutoScanBuildActive)
+                return;
+
+            float finalizationStartedAt = Time.realtimeSinceStartup;
+            try
+            {
+                CrossingPathBuilder.EndBuildBatch();
+            }
+            catch (System.Exception exception)
+            {
+                _stagedAutoScanBuildFailed++;
+                CrossingPathBuilder.CancelBuildBatch();
+                Debug.LogError("[PedestrianCrossingToolkit] Staged Auto Scan build finalization failed: " + exception);
+            }
+
+            float finalizationMs = (Time.realtimeSinceStartup - finalizationStartedAt) * 1000f;
+            CrossingPlacementRegistry.SetAutoRebuildBuiltStructures(CrossingPlacementRegistry.Count > 0);
+            float wallElapsedMs = (Time.realtimeSinceStartup - _stagedAutoScanBuildStartedAt) * 1000f;
+            string completionStatus = _stagedAutoScanBuildCompletionStatus;
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Staged Auto Scan build completed: reason="
+                      + _stagedAutoScanBuildReason
+                      + " assets="
+                      + _stagedAutoScanBuildAssetCount
+                      + " built="
+                      + _stagedAutoScanBuildBuilt
+                      + " skipped="
+                      + _stagedAutoScanBuildSkipped
+                      + " failed="
+                      + _stagedAutoScanBuildFailed
+                      + " workMs="
+                      + _stagedAutoScanBuildWorkElapsedMs.ToString("0.0")
+                      + " worstSliceMs="
+                      + _stagedAutoScanBuildWorstSliceMs.ToString("0.0")
+                      + " finalizationMs="
+                      + finalizationMs.ToString("0.0")
+                      + " wallMs="
+                      + wallElapsedMs.ToString("0.0"));
+            PedestrianCrossingLog.Info("Auto scan staged construction completed: assets="
+                      + _stagedAutoScanBuildAssetCount
+                      + " built="
+                      + _stagedAutoScanBuildBuilt
+                      + " skipped="
+                      + _stagedAutoScanBuildSkipped
+                      + " failed="
+                      + _stagedAutoScanBuildFailed
+                      + ".");
+            ResetStagedAutoScanBuildState();
+            StatusMessage = string.IsNullOrEmpty(completionStatus)
+                ? "Auto Scan crossing batch applied."
+                : completionStatus;
+            PedestrianCrossingToolkitPanel.RefreshInstance();
+            PedestrianCrossingRoadsTab.RefreshInstance();
+            ShowPendingAutoScanCompletionSummary();
+        }
+
+        private static void FailManagedStagedAutoScanBuild(System.Exception exception)
+        {
+            _stagedAutoScanBuildManaged = false;
+            Debug.LogWarning("[PedestrianCrossingToolkit] Managed staged Auto Scan build interrupted; continuing through PCT's local frame scheduler. exception="
+                             + exception);
+        }
+
+        private static void ResetStagedAutoScanBuildState()
+        {
+            for (int i = _stagedAutoScanBuildAssetIndex; i < _stagedAutoScanBuildAssetCount; i++)
+                StagedAutoScanBuildAssetIds[i] = 0;
+
+            _stagedAutoScanBuildActive = false;
+            _stagedAutoScanBuildManaged = false;
+            _stagedAutoScanBuildAssetCount = 0;
+            _stagedAutoScanBuildAssetIndex = 0;
+            _stagedAutoScanBuildBuilt = 0;
+            _stagedAutoScanBuildSkipped = 0;
+            _stagedAutoScanBuildFailed = 0;
+            _stagedAutoScanBuildStartedAt = 0f;
+            _stagedAutoScanBuildWorkElapsedMs = 0f;
+            _stagedAutoScanBuildWorstSliceMs = 0f;
+            _stagedAutoScanBuildReason = string.Empty;
+            _stagedAutoScanBuildCompletionStatus = string.Empty;
+        }
+
+        private static void CancelStagedAutoScanBuild()
+        {
+            if (_stagedAutoScanBuildActive)
+                CrossingPathBuilder.CancelBuildBatch();
+            ResetStagedAutoScanBuildState();
         }
 
         private static void SyncBuiltStructuresForChangedAssets(string reason, int[] changedAssetIds, int changedAssetCount)

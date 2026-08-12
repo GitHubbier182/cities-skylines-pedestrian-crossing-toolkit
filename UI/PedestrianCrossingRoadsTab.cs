@@ -23,6 +23,10 @@ namespace PedestrianCrossingToolkit
         private UIComponent _crossingsPage;
         private PedestrianCrossingRoadsTabPanel _crossingsPanel;
         private int _tabIndex = -1;
+        private UIComponent _roadsPanel;
+        private UIComponent _roadsPage;
+        private UITabstrip _rootTabstrip;
+        private int _roadsPageIndex = -1;
         private bool _wasOpen;
 
         public static bool IsOpen
@@ -31,8 +35,13 @@ namespace PedestrianCrossingToolkit
             {
                 return Instance != null
                        && Instance._installed
-                       && IsEffectivelyVisible(Instance._crossingsPage);
+                       && Instance.HasSelectedPageOwnership();
             }
+        }
+
+        internal int SelectedTabIndexForDiagnostics
+        {
+            get { return _tabstrip == null ? -1 : _tabstrip.selectedIndex; }
         }
 
         public static void CreateIfNeeded(UIView view)
@@ -62,7 +71,7 @@ namespace PedestrianCrossingToolkit
 
         public static bool IsMouseOverUi()
         {
-            return Instance != null
+            return IsOpen
                    && (IsMouseOverComponent(Instance._crossingsTab)
                        || IsMouseOverComponent(Instance._crossingsPage));
         }
@@ -89,6 +98,22 @@ namespace PedestrianCrossingToolkit
 
         private void LateUpdate()
         {
+            long diagnosticsStartedAt =
+                PedestrianCrossingPerformanceDiagnostics.BeginCallbackSample();
+            try
+            {
+                LateUpdateCore();
+            }
+            finally
+            {
+                PedestrianCrossingPerformanceDiagnostics.EndRoadsTabUpdate(
+                    diagnosticsStartedAt);
+                PedestrianCrossingPerformanceDiagnostics.ObserveRenderedFrame(IsOpen);
+            }
+        }
+
+        private void LateUpdateCore()
+        {
             if (_installed)
             {
                 if (_tabstrip == null
@@ -103,10 +128,7 @@ namespace PedestrianCrossingToolkit
                     SyncPageVisibility();
                     _crossingsTab.isEnabled =
                         !PedestrianCrossingToolkitState.IsAutoScanObservationActive;
-                    bool open = IsOpen;
-                    if (_wasOpen && !open)
-                        PedestrianCrossingToolkitState.ClearValidationProblemMarkersForCrossingTabClose();
-                    _wasOpen = open;
+                    UpdateEffectiveOpenState();
                 }
 
                 return;
@@ -153,7 +175,12 @@ namespace PedestrianCrossingToolkit
                 if (existingPanel == null)
                     existingPanel = existingPage.AddUIComponent<PedestrianCrossingRoadsTabPanel>();
 
-                AdoptInstalledUi(tabstrip, existingTab, existingPage, existingPanel);
+                AdoptInstalledUi(
+                    roadsGroupPanel,
+                    tabstrip,
+                    existingTab,
+                    existingPage,
+                    existingPanel);
                 return;
             }
 
@@ -206,7 +233,7 @@ namespace PedestrianCrossingToolkit
             page.name = PageName;
             page.isVisible = false;
             PedestrianCrossingRoadsTabPanel panel = page.AddUIComponent<PedestrianCrossingRoadsTabPanel>();
-            AdoptInstalledUi(tabstrip, tab, page, panel);
+            AdoptInstalledUi(roadsGroupPanel, tabstrip, tab, page, panel);
 
             PedestrianCrossingLog.Info(
                 "Added the PCT Crossing tab to the native road-building category strip: strip="
@@ -217,6 +244,7 @@ namespace PedestrianCrossingToolkit
         }
 
         private void AdoptInstalledUi(
+            RoadsGroupPanel roadsGroupPanel,
             UITabstrip tabstrip,
             UIButton tab,
             UIComponent page,
@@ -227,11 +255,27 @@ namespace PedestrianCrossingToolkit
             _crossingsPage = page;
             _crossingsPanel = panel;
             _tabIndex = FindTabIndex(tabstrip, tab);
+            _roadsPanel = roadsGroupPanel == null
+                ? null
+                : roadsGroupPanel.GetComponent<UIComponent>();
+            UIComponent roadsPage;
+            _rootTabstrip = FindOwningTabstrip(
+                _roadsPanel,
+                out roadsPage);
+            _roadsPage = roadsPage;
+            _roadsPageIndex = FindPageIndex(
+                _rootTabstrip == null ? null : _rootTabstrip.tabPages,
+                _roadsPage);
             ConfigureTab(tabstrip, tab);
             tab.eventClick -= OnCrossingsTabClicked;
             tab.eventClick += OnCrossingsTabClicked;
             tabstrip.eventSelectedIndexChanged -= OnSelectedIndexChanged;
             tabstrip.eventSelectedIndexChanged += OnSelectedIndexChanged;
+            if (_rootTabstrip != null)
+            {
+                _rootTabstrip.eventSelectedIndexChanged -= OnRootSelectedIndexChanged;
+                _rootTabstrip.eventSelectedIndexChanged += OnRootSelectedIndexChanged;
+            }
             page.eventVisibilityChanged -= OnCrossingsPageVisibilityChanged;
             page.eventVisibilityChanged += OnCrossingsPageVisibilityChanged;
             _installed = true;
@@ -242,6 +286,7 @@ namespace PedestrianCrossingToolkit
 
         private void OnCrossingsTabClicked(UIComponent component, UIMouseEventParameter eventParam)
         {
+            PedestrianCrossingPerformanceDiagnostics.RecordCrossingTabClick(_tabIndex);
             PedestrianCrossingToolkitPanel.NotifyToolkitUiInput(false);
             PedestrianCrossingToolkitState.SetActiveMode(PedestrianToolMode.None);
             if (ToolsModifierControl.toolController != null)
@@ -263,6 +308,12 @@ namespace PedestrianCrossingToolkit
         private void OnSelectedIndexChanged(UIComponent component, int selectedIndex)
         {
             SyncPageVisibility();
+            UpdateEffectiveOpenState();
+        }
+
+        private void OnRootSelectedIndexChanged(UIComponent component, int selectedIndex)
+        {
+            UpdateEffectiveOpenState();
         }
 
         private void SyncPageVisibility()
@@ -283,20 +334,47 @@ namespace PedestrianCrossingToolkit
 
         private void OnCrossingsPageVisibilityChanged(UIComponent component, bool visible)
         {
-            CrossingAppliedOverlay.InvalidateCrossingSummaryUiCache();
-            if (visible)
-                RefreshInstance();
-            else
+            UpdateEffectiveOpenState();
+        }
+
+        private bool HasSelectedPageOwnership()
+        {
+            if (!_installed
+                || _roadsPanel == null
+                || !IsSelected(_crossingsTab, _tabstrip, _tabIndex)
+                || !IsEffectivelyVisible(_roadsPanel)
+                || !IsEffectivelyVisible(_crossingsPage))
             {
-                PedestrianCrossingToolkitState.ClearValidationProblemMarkersForCrossingTabClose();
-                PedestrianCrossingAutoScanInstructionsPanel.HideInstance();
-                PedestrianCrossingRoadsHoverPreview.HideInstance();
-                PedestrianCrossingToolkitState.SetActiveMode(PedestrianToolMode.None);
-                if (ToolsModifierControl.toolController != null
-                    && ToolsModifierControl.toolController.CurrentTool is PedestrianCrossingInteractionTool)
-                {
-                    ToolsModifierControl.SetTool<DefaultTool>();
-                }
+                return false;
+            }
+
+            return _rootTabstrip != null
+                   && _roadsPageIndex >= 0
+                   && _rootTabstrip.selectedIndex == _roadsPageIndex;
+        }
+
+        private void UpdateEffectiveOpenState()
+        {
+            bool open = HasSelectedPageOwnership();
+            if (_wasOpen == open)
+                return;
+
+            _wasOpen = open;
+            CrossingAppliedOverlay.InvalidateCrossingSummaryUiCache();
+            if (open)
+            {
+                RefreshInstance();
+                return;
+            }
+
+            PedestrianCrossingToolkitState.ClearValidationProblemMarkersForCrossingTabClose();
+            PedestrianCrossingAutoScanInstructionsPanel.HideInstance();
+            PedestrianCrossingRoadsHoverPreview.HideInstance();
+            PedestrianCrossingToolkitState.SetActiveMode(PedestrianToolMode.None);
+            if (ToolsModifierControl.toolController != null
+                && ToolsModifierControl.toolController.CurrentTool is PedestrianCrossingInteractionTool)
+            {
+                ToolsModifierControl.SetTool<DefaultTool>();
             }
         }
 
@@ -304,6 +382,8 @@ namespace PedestrianCrossingToolkit
         {
             if (_tabstrip != null)
                 _tabstrip.eventSelectedIndexChanged -= OnSelectedIndexChanged;
+            if (_rootTabstrip != null)
+                _rootTabstrip.eventSelectedIndexChanged -= OnRootSelectedIndexChanged;
 
             if (_crossingsTab != null)
             {
@@ -324,12 +404,18 @@ namespace PedestrianCrossingToolkit
         {
             if (_tabstrip != null)
                 _tabstrip.eventSelectedIndexChanged -= OnSelectedIndexChanged;
+            if (_rootTabstrip != null)
+                _rootTabstrip.eventSelectedIndexChanged -= OnRootSelectedIndexChanged;
             _installed = false;
             _tabstrip = null;
             _crossingsTab = null;
             _crossingsPage = null;
             _crossingsPanel = null;
             _tabIndex = -1;
+            _roadsPanel = null;
+            _roadsPage = null;
+            _rootTabstrip = null;
+            _roadsPageIndex = -1;
             _wasOpen = false;
         }
 
@@ -358,6 +444,52 @@ namespace PedestrianCrossingToolkit
                 if (candidate == tab)
                     return tabIndex;
                 tabIndex++;
+            }
+
+            return -1;
+        }
+
+        private static UITabstrip FindOwningTabstrip(
+            UIComponent component,
+            out UIComponent owningPage)
+        {
+            owningPage = null;
+            UIView view = UIView.GetAView();
+            if (component == null || view == null)
+                return null;
+
+            UITabstrip[] tabstrips = view.GetComponentsInChildren<UITabstrip>(true);
+            UIComponent candidatePage = component;
+            while (candidatePage != null)
+            {
+                UITabContainer pages = candidatePage.parent as UITabContainer;
+                if (pages != null)
+                {
+                    for (int i = 0; i < tabstrips.Length; i++)
+                    {
+                        if (tabstrips[i] == null || tabstrips[i].tabPages != pages)
+                            continue;
+
+                        owningPage = candidatePage;
+                        return tabstrips[i];
+                    }
+                }
+
+                candidatePage = candidatePage.parent;
+            }
+
+            return null;
+        }
+
+        private static int FindPageIndex(UITabContainer pages, UIComponent page)
+        {
+            if (pages == null || page == null)
+                return -1;
+
+            for (int i = 0; i < pages.components.Count; i++)
+            {
+                if (pages.components[i] == page)
+                    return i;
             }
 
             return -1;

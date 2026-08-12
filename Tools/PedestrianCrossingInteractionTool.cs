@@ -901,7 +901,7 @@ namespace PedestrianCrossingToolkit
             return text;
         }
 
-        private static string FormatPathQueryState(CrossingPlacementAsset asset)
+        internal static string FormatPathQueryState(CrossingPlacementAsset asset)
         {
             if (!asset.Plan.IsValid)
                 return "needs rebuild";
@@ -919,7 +919,7 @@ namespace PedestrianCrossingToolkit
             }
         }
 
-        private static string FormatSuppressionQueryState(CrossingPlacementAsset asset)
+        internal static string FormatSuppressionQueryState(CrossingPlacementAsset asset)
         {
             if (!asset.Plan.IsValid)
                 return "unknown";
@@ -935,7 +935,7 @@ namespace PedestrianCrossingToolkit
                 : "not active";
         }
 
-        private static string FormatSignalQueryState(CrossingPlacementAsset asset)
+        internal static string FormatSignalQueryState(CrossingPlacementAsset asset)
         {
             if (asset.Placement.Mode != PedestrianToolMode.SignalCrossing)
                 return "n/a";
@@ -949,7 +949,7 @@ namespace PedestrianCrossingToolkit
                    + ", crossing " + (snapshot.HasPedestriansOnCrossing ? "yes" : "no");
         }
 
-        private static string FormatSignalPhase(CrossingPathBuilder.SignalControllerDebugSnapshot snapshot)
+        internal static string FormatSignalPhase(CrossingPathBuilder.SignalControllerDebugSnapshot snapshot)
         {
             if (snapshot.Phase == "Idle")
                 return "idle";
@@ -961,7 +961,7 @@ namespace PedestrianCrossingToolkit
             return string.IsNullOrEmpty(snapshot.Phase) ? "unknown" : snapshot.Phase;
         }
 
-        private static string FormatOwnedAssetQueryState(CrossingPlacementAsset asset)
+        internal static string FormatOwnedAssetQueryState(CrossingPlacementAsset asset)
         {
             if (!asset.Plan.IsValid)
                 return "needs rebuild";
@@ -970,7 +970,7 @@ namespace PedestrianCrossingToolkit
             return ownedCount > 0 ? "healthy (" + ownedCount + ")" : "missing";
         }
 
-        private static string ToTitleCase(string text)
+        internal static string ToTitleCase(string text)
         {
             if (string.IsNullOrEmpty(text))
                 return string.Empty;
@@ -1269,7 +1269,7 @@ namespace PedestrianCrossingToolkit
             GUI.DrawTexture(rect, GetSignalLampCircleTexture());
         }
 
-        private static Texture2D GetSignalLampCircleTexture()
+        internal static Texture2D GetSignalLampCircleTexture()
         {
             if (_signalLampCircleTexture != null)
                 return _signalLampCircleTexture;

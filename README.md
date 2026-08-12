@@ -1,6 +1,6 @@
 # Pedestrian Crossing Toolkit
 
-Version 2.0.2 is released on Steam Workshop item `3735259302` and as matching
+Version 2.0.3 is released on Steam Workshop item `3735259302` and as matching
 clean public source.
 
 ## Scope
@@ -41,17 +41,54 @@ access/stair roofs and subway canopy roof follow the game's rain, retained
 wetness and snow presentation while sheltered and road-integrated surfaces
 retain their normal appearance.
 
-Version 2.0.1 preserves that complete workflow while making the static Crossing
-tile layout event-driven, caching UI-occlusion discovery, sampling the road
-upgrade warning target at a bounded rate, and making the selected Roads tab the
-sole owner of Crossing-page visibility. These changes keep Roads > Crossing
-responsive in heavily modded cities without removing or changing its tools,
-summaries, warnings, placement, or removal behavior.
+The v2.0.1 candidate preserves that complete Roads > Crossing workflow while
+making its static tile layout event-driven, caching the UI-occlusion snapshot,
+sampling the road-upgrade warning target at a bounded rate, and making the
+selected Roads tab the sole owner of Crossing-page visibility.
 
-Version 2.0.2 removes a saved-city rendering bottleneck by consolidating
-generated subway-entrance and weather-roof presentation updates and pacing
-automatic supporting-network checks across rendered frames. Crossing tools,
-signals, routes, visuals, persistence and compatibility behavior are unchanged.
+Released v2.0.2 consolidates generated subway-entrance and roof-weather updates so
+unchanged presentation creates no per-renderer frame work. Automatic supporting
+network checks retain the same removal rules while advancing one saved crossing
+per rendered update, avoiding a whole-registry main-thread burst as cities grow.
+
+Version 2.0.3 makes the saved crossing count and every successful crossing
+placement part of normal support logging. Detailed geometry and planning traces
+remain behind the optional advanced-log setting. It also captures a recognised
+crossing-removal click before reflected vanilla targets are cleared, retains
+that capture through mouse-up even if the boundary then fails, contains overlay
+failures once, and uses a world-space candidate index before exact screen-space
+selection so Bulldoze hover work does not scan every saved crossing each frame.
+PCT now requires the Roads surface to remain visible and both Roads and Crossing
+to be the selected native pages, so opening UPG, FLM or another top-level
+workspace closes PCT's tools, overlays and diagnostic measurement immediately
+rather than leaving hidden Crossing work. Passive detail repaint also keeps its
+grade-separated state query silent instead of producing geometry logs per frame.
+PCT-owned targeted path removal now detaches immediately and queues exact native
+release without waiting; one segment is released per simulation-frame callback.
+Bulk Auto Scan upgrades and other targeted removals therefore neither mutate
+vanilla manager update sets during iteration nor block the calling UI/scan path.
+Large Auto Scan construction builds one immutable changed crossing per
+cooperative frame slice and withholds completion until the batch finalizes, so
+a complete replacement set is not constructed in one rendered frame.
+Managed signals use a rotating bounded scheduler: no rendered update performs
+more than two pedestrian-demand scans, active safety phases take priority, and
+no simulation frame defensively reasserts more than four controllers. Nearby
+road arms are resolved through the native segment grid, and newly built signal
+controllers enter the scheduler without an immediate per-controller scan.
+With advanced logs enabled, v2.0.3 also records a rolling closed-tab baseline,
+Crossing-tab open and close transitions, five-second open-tab frame-rate windows
+and the measured time spent in PCT's Roads-tab, overlay and main update callbacks.
+Crossing markers retain their original far-zoom ceiling. Close passive detail
+panels are prioritised nearest the pointer, decluttered and capped to a
+screen-derived maximum. The complete graphical live signal display—vehicle and
+pedestrian signal bodies, coloured lamp states, and its phase, demand, path and
+ownership information—is retained in a bounded reusable Colossal UI panel pool;
+panels move without per-repaint reconstruction, static facts refresh at a paced
+interval, and live labels and lamp colours change only with their source state.
+It remains required player-facing functionality. Inspect Crossing still exposes any
+exact crossing. Signal demand trusts the native citizen grid whenever it is valid, so
+an empty local result no longer triggers a periodic whole-citizen-buffer scan.
+This diagnostic is observational only and emits no normal-log traffic.
 
 ## Placement And Ownership
 
@@ -85,16 +122,6 @@ signals, routes, visuals, persistence and compatibility behavior are unchanged.
 ## Required Dependency
 
 - Harmony 2.2.2-0, Workshop item `2040656402`.
-
-## Development
-
-- Active work and UAT: `ISSUES_AND_PLANS.md`
-- Integration rules: `DESIGN_PRINCIPLES.md`
-- Road-replacement API: `PUBLIC_API.md`
-- Historical evidence: `Archive/`
-- Release gate: `STEAM_RELEASE_CHECKLIST.md`
-
-Run `./build+deploy.sh` from this folder after code changes.
 
 ## Copyright and intellectual property
 

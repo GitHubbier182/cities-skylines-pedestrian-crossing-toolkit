@@ -35,20 +35,28 @@ namespace PedestrianCrossingToolkit
     {
         private static readonly ReleaseNoticeContent ReleaseNotice = new ReleaseNoticeContent(
             "PedestrianCrossingToolkit.ShownReleaseNoticeId",
-            "v2.0.2",
-            "Pedestrian Crossing Toolkit 2.0.2",
-            "City-scale performance",
+            "v2.0.3",
+            "Pedestrian Crossing Toolkit 2.0.3",
+            "Better support evidence",
             string.Empty,
             "PCT",
             new[]
             {
-                "Generated crossing presentation and automatic network checks now remain lightweight as the number of saved crossings grows."
+                "Normal logs now record the saved crossing count and every successful crossing placement so support reports include the essential crossing evidence.",
+                "Vanilla Bulldoze crossing removal keeps the complete click gesture away from the supporting road and remains responsive as saved crossing totals grow.",
+                "Roads > Crossing now closes its tools and diagnostics immediately when another top-level workspace is opened.",
+                "Signal processing is now paced and bounded to reduce its performance impact and prevent game hitching and stalls.",
+                "Advanced logs now compare frame rate and measured PCT work before, during and after Roads > Crossing is open to improve performance investigations."
             },
             true,
             string.Empty,
             null,
             new[]
             {
+                new ReleaseNoticeVersion("v2.0.2", "10 August 2026, 16:49 BST", new[]
+                {
+                    "Generated crossing presentation and automatic network checks remain lightweight as the number of saved crossings grows."
+                }, true),
                 new ReleaseNoticeVersion("v2.0.1", "6 August 2026, 22:49 BST", new[]
                 {
                     "Roads > Crossing now stays responsive in heavily modded cities and remains confined to its selected Roads tab."
@@ -156,6 +164,7 @@ namespace PedestrianCrossingToolkit
             PedestrianCrossingAutoScanInstructionsPanel.DestroyInstance();
             CrossingAppliedOverlay.DestroyInstance();
             PedestrianCrossingRoadsTab.DestroyInstance();
+            PedestrianCrossingPerformanceDiagnostics.Reset();
             PedestrianCrossingToolkitPanel.DestroyInstance();
             PedestrianCrossingToolkitLauncherButton.DestroyInstance();
 
@@ -188,17 +197,27 @@ namespace PedestrianCrossingToolkit
         {
             base.OnUpdate(realTimeDelta, simulationTimeDelta);
 
-            ProcessMainThreadActions();
-            if (!PedestrianCrossingToolkitState.Enabled)
-                return;
+            long diagnosticsStartedAt =
+                PedestrianCrossingPerformanceDiagnostics.BeginCallbackSample();
+            try
+            {
+                ProcessMainThreadActions();
+                if (!PedestrianCrossingToolkitState.Enabled)
+                    return;
 
-            PedestrianCrossingToolkitState.ProcessDeferredLoadWork(realTimeDelta);
-            PedestrianCrossingToolkitState.ProcessAutoScanObservation(realTimeDelta);
-            PedestrianCrossingToolkitState.ProcessNetworkDependencyChanges(realTimeDelta);
-            PedestrianCrossingToolkitState.ProcessScheduledCrossingValidation();
-            RoadPlacementRules.UpdateVanillaCrossingCache(realTimeDelta);
-            CrossingPathBuilder.UpdateGeneratedSurfacePresentation();
-            CrossingPathBuilder.UpdateSignalControllers(GetSignalControllerDelta(realTimeDelta));
+                PedestrianCrossingToolkitState.ProcessDeferredLoadWork(realTimeDelta);
+                PedestrianCrossingToolkitState.ProcessAutoScanObservation(realTimeDelta);
+                PedestrianCrossingToolkitState.ProcessNetworkDependencyChanges(realTimeDelta);
+                PedestrianCrossingToolkitState.ProcessScheduledCrossingValidation();
+                RoadPlacementRules.UpdateVanillaCrossingCache(realTimeDelta);
+                CrossingPathBuilder.UpdateGeneratedSurfacePresentation();
+                CrossingPathBuilder.UpdateSignalControllers(GetSignalControllerDelta(realTimeDelta));
+            }
+            finally
+            {
+                PedestrianCrossingPerformanceDiagnostics.EndThreadingUpdate(
+                    diagnosticsStartedAt);
+            }
         }
 
         private static void ProcessMainThreadActions()
@@ -241,6 +260,7 @@ namespace PedestrianCrossingToolkit
             if (!PedestrianCrossingToolkitState.Enabled)
                 return;
 
+            CrossingPathBuilder.ProcessDeferredNetworkRelease();
             CrossingPathBuilder.ReapplySignalControllerStates();
         }
     }

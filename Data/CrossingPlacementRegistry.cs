@@ -20,6 +20,17 @@ namespace PedestrianCrossingToolkit
         private const float CrossingReplacementFootprintHalfWidth = 10f;
         private const float CrossingReplacementAccessRadius = 6f;
         private static CrossingLandingAccessAssetWorkOrder[] AccessAssetBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
+        private const float SpatialPickCellSize = 64f;
+        private const float SpatialPickIndexPadding = 4f;
+        private static readonly Dictionary<long, List<int>> SpatialPickAssetIdsByCell =
+            new Dictionary<long, List<int>>();
+        private static readonly Dictionary<int, CrossingPlacementAsset> SpatialPickAssetsById =
+            new Dictionary<int, CrossingPlacementAsset>();
+        private static readonly Dictionary<int, List<CrossingLandingAccessAssetWorkOrder>> SpatialPickAccessByAssetId =
+            new Dictionary<int, List<CrossingLandingAccessAssetWorkOrder>>();
+        private static readonly HashSet<int> SpatialPickCandidateAssetIds = new HashSet<int>();
+        private static int _spatialPickRegistryRevision = -1;
+        private static int _spatialPickAccessRevision = -1;
         private static int _revision;
 
         public static int Count
@@ -181,6 +192,8 @@ namespace PedestrianCrossingToolkit
         internal static bool TryGetAssetNearScreen(
             Camera camera,
             Vector2 screenPosition,
+            Vector3 worldPosition,
+            float worldRadius,
             float pickRadiusPixels,
             out CrossingPlacementAsset asset)
         {
@@ -188,41 +201,46 @@ namespace PedestrianCrossingToolkit
             if (camera == null || Assets.Count == 0)
                 return false;
 
-            float bestDistanceSqr = Mathf.Max(1f, pickRadiusPixels * pickRadiusPixels);
-            for (int i = 0; i < Assets.Count; i++)
+            EnsureSpatialPickIndex();
+            SpatialPickCandidateAssetIds.Clear();
+            float radius = Mathf.Max(SpatialPickIndexPadding, worldRadius);
+            int minCellX = Mathf.FloorToInt((worldPosition.x - radius) / SpatialPickCellSize);
+            int maxCellX = Mathf.FloorToInt((worldPosition.x + radius) / SpatialPickCellSize);
+            int minCellZ = Mathf.FloorToInt((worldPosition.z - radius) / SpatialPickCellSize);
+            int maxCellZ = Mathf.FloorToInt((worldPosition.z + radius) / SpatialPickCellSize);
+            for (int cellZ = minCellZ; cellZ <= maxCellZ; cellZ++)
             {
-                CrossingPlacementAsset candidate = Assets[i];
-                if (candidate.Id == 0)
+                for (int cellX = minCellX; cellX <= maxCellX; cellX++)
+                {
+                    List<int> cellAssetIds;
+                    if (!SpatialPickAssetIdsByCell.TryGetValue(
+                            MakeRestoreCellKey(cellX, cellZ),
+                            out cellAssetIds))
+                    {
+                        continue;
+                    }
+
+                    for (int i = 0; i < cellAssetIds.Count; i++)
+                        SpatialPickCandidateAssetIds.Add(cellAssetIds[i]);
+                }
+            }
+
+            float bestDistanceSqr = Mathf.Max(1f, pickRadiusPixels * pickRadiusPixels);
+            foreach (int assetId in SpatialPickCandidateAssetIds)
+            {
+                CrossingPlacementAsset candidate;
+                if (!SpatialPickAssetsById.TryGetValue(assetId, out candidate))
                     continue;
 
-                Vector3 center = candidate.Plan.IsValid
-                    ? candidate.Plan.Center
-                    : candidate.Placement.WorldPosition;
-                float distanceSqr = GetScreenPointDistanceSqr(camera, screenPosition, center);
-                if (candidate.Plan.IsValid)
-                {
-                    distanceSqr = Mathf.Min(
-                        distanceSqr,
-                        GetScreenSegmentDistanceSqr(
-                            camera,
-                            screenPosition,
-                            candidate.Plan.LeftEdge,
-                            candidate.Plan.RightEdge));
+                float distanceSqr = GetAssetScreenDistanceSqr(
+                    camera,
+                    screenPosition,
+                    candidate);
 
-                    int exitCount = candidate.Plan.JunctionExitCount;
-                    for (int exitIndex = 0; exitIndex < exitCount; exitIndex++)
-                    {
-                        distanceSqr = Mathf.Min(
-                            distanceSqr,
-                            GetScreenSegmentDistanceSqr(
-                                camera,
-                                screenPosition,
-                                center,
-                                candidate.Plan.JunctionExitPoints[exitIndex]));
-                    }
-                }
-
-                if (distanceSqr >= bestDistanceSqr)
+                if (distanceSqr > bestDistanceSqr
+                    || (Mathf.Approximately(distanceSqr, bestDistanceSqr)
+                        && asset.Id != 0
+                        && candidate.Id >= asset.Id))
                     continue;
 
                 bestDistanceSqr = distanceSqr;
@@ -230,6 +248,202 @@ namespace PedestrianCrossingToolkit
             }
 
             return asset.Id != 0;
+        }
+
+        private static float GetAssetScreenDistanceSqr(
+            Camera camera,
+            Vector2 screenPosition,
+            CrossingPlacementAsset candidate)
+        {
+            Vector3 center = candidate.Plan.IsValid
+                ? candidate.Plan.Center
+                : candidate.Placement.WorldPosition;
+            float distanceSqr = GetScreenPointDistanceSqr(camera, screenPosition, center);
+            if (candidate.Plan.IsValid)
+            {
+                distanceSqr = Mathf.Min(
+                    distanceSqr,
+                    GetScreenSegmentDistanceSqr(
+                        camera,
+                        screenPosition,
+                        candidate.Plan.LeftEdge,
+                        candidate.Plan.RightEdge));
+
+                int exitCount = candidate.Plan.JunctionExitPoints == null
+                    ? 0
+                    : Mathf.Min(
+                        candidate.Plan.JunctionExitCount,
+                        candidate.Plan.JunctionExitPoints.Length);
+                for (int exitIndex = 0; exitIndex < exitCount; exitIndex++)
+                {
+                    distanceSqr = Mathf.Min(
+                        distanceSqr,
+                        GetScreenSegmentDistanceSqr(
+                            camera,
+                            screenPosition,
+                            center,
+                            candidate.Plan.JunctionExitPoints[exitIndex]));
+                }
+            }
+
+            List<CrossingLandingAccessAssetWorkOrder> accessAssets;
+            if (!SpatialPickAccessByAssetId.TryGetValue(candidate.Id, out accessAssets))
+                return distanceSqr;
+
+            for (int i = 0; i < accessAssets.Count; i++)
+            {
+                Vector3 first;
+                Vector3 second;
+                GetAccessFootprintSpan(accessAssets[i], out first, out second);
+                distanceSqr = Mathf.Min(
+                    distanceSqr,
+                    GetScreenSegmentDistanceSqr(
+                        camera,
+                        screenPosition,
+                        first,
+                        second));
+            }
+
+            return distanceSqr;
+        }
+
+        private static void EnsureSpatialPickIndex()
+        {
+            int accessRevision = CrossingLandingConnectorPlanner.Revision;
+            if (_spatialPickRegistryRevision == _revision
+                && _spatialPickAccessRevision == accessRevision)
+            {
+                return;
+            }
+
+            SpatialPickAssetIdsByCell.Clear();
+            SpatialPickAssetsById.Clear();
+            SpatialPickAccessByAssetId.Clear();
+            for (int i = 0; i < Assets.Count; i++)
+            {
+                CrossingPlacementAsset candidate = Assets[i];
+                if (candidate.Id == 0)
+                    continue;
+
+                SpatialPickAssetsById[candidate.Id] = candidate;
+                IndexSpatialPickAsset(candidate);
+            }
+
+            ManagerCapacity.EnsureArrayCapacity(
+                ref AccessAssetBuffer,
+                CrossingLandingConnectorPlanner.AccessAssetCount);
+            int accessCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(AccessAssetBuffer);
+            int accessMax = Mathf.Min(accessCount, AccessAssetBuffer.Length);
+            for (int i = 0; i < accessMax; i++)
+            {
+                CrossingLandingAccessAssetWorkOrder access = AccessAssetBuffer[i];
+                if (access.AssetId == 0 || !SpatialPickAssetsById.ContainsKey(access.AssetId))
+                    continue;
+
+                List<CrossingLandingAccessAssetWorkOrder> assetAccess;
+                if (!SpatialPickAccessByAssetId.TryGetValue(access.AssetId, out assetAccess))
+                {
+                    assetAccess = new List<CrossingLandingAccessAssetWorkOrder>();
+                    SpatialPickAccessByAssetId[access.AssetId] = assetAccess;
+                }
+
+                assetAccess.Add(access);
+                Vector3 first;
+                Vector3 second;
+                GetAccessFootprintSpan(access, out first, out second);
+                AddSpatialPickSpan(access.AssetId, first, second);
+            }
+
+            _spatialPickRegistryRevision = _revision;
+            _spatialPickAccessRevision = accessRevision;
+        }
+
+        private static void IndexSpatialPickAsset(CrossingPlacementAsset asset)
+        {
+            if (!asset.Plan.IsValid)
+            {
+                AddSpatialPickSpan(
+                    asset.Id,
+                    asset.Placement.WorldPosition,
+                    asset.Placement.WorldPosition);
+                if (asset.Placement.HasSecondaryPoint)
+                {
+                    AddSpatialPickSpan(
+                        asset.Id,
+                        asset.Placement.WorldPosition,
+                        asset.Placement.SecondaryWorldPosition);
+                }
+                return;
+            }
+
+            AddSpatialPickSpan(asset.Id, asset.Plan.LeftEdge, asset.Plan.RightEdge);
+            int exitCount = asset.Plan.JunctionExitPoints == null
+                ? 0
+                : Mathf.Min(asset.Plan.JunctionExitCount, asset.Plan.JunctionExitPoints.Length);
+            for (int i = 0; i < exitCount; i++)
+                AddSpatialPickSpan(asset.Id, asset.Plan.Center, asset.Plan.JunctionExitPoints[i]);
+        }
+
+        private static void AddSpatialPickSpan(int assetId, Vector3 first, Vector3 second)
+        {
+            if (assetId == 0 || !IsFinite(first) || !IsFinite(second))
+                return;
+
+            int minCellX = Mathf.FloorToInt(
+                (Mathf.Min(first.x, second.x) - SpatialPickIndexPadding) / SpatialPickCellSize);
+            int maxCellX = Mathf.FloorToInt(
+                (Mathf.Max(first.x, second.x) + SpatialPickIndexPadding) / SpatialPickCellSize);
+            int minCellZ = Mathf.FloorToInt(
+                (Mathf.Min(first.z, second.z) - SpatialPickIndexPadding) / SpatialPickCellSize);
+            int maxCellZ = Mathf.FloorToInt(
+                (Mathf.Max(first.z, second.z) + SpatialPickIndexPadding) / SpatialPickCellSize);
+            for (int cellZ = minCellZ; cellZ <= maxCellZ; cellZ++)
+            {
+                for (int cellX = minCellX; cellX <= maxCellX; cellX++)
+                {
+                    long key = MakeRestoreCellKey(cellX, cellZ);
+                    List<int> assetIds;
+                    if (!SpatialPickAssetIdsByCell.TryGetValue(key, out assetIds))
+                    {
+                        assetIds = new List<int>();
+                        SpatialPickAssetIdsByCell[key] = assetIds;
+                    }
+
+                    if (!assetIds.Contains(assetId))
+                        assetIds.Add(assetId);
+                }
+            }
+        }
+
+        private static void GetAccessFootprintSpan(
+            CrossingLandingAccessAssetWorkOrder access,
+            out Vector3 first,
+            out Vector3 second)
+        {
+            first = access.DeckPosition;
+            second = access.Position;
+            Vector3 horizontal = second - first;
+            horizontal.y = 0f;
+            if (horizontal.sqrMagnitude > 0.25f)
+                return;
+
+            Vector3 direction = access.FacingDirection;
+            direction.y = 0f;
+            if (direction.sqrMagnitude <= 0.01f)
+                direction = Vector3.forward;
+            else
+                direction.Normalize();
+
+            first = access.Position;
+            second = access.Position + direction * Mathf.Max(2f, access.FootprintLength);
+        }
+
+        private static bool IsFinite(Vector3 value)
+        {
+            return !float.IsNaN(value.x)
+                   && !float.IsInfinity(value.x)
+                   && !float.IsNaN(value.z)
+                   && !float.IsInfinity(value.z);
         }
 
         internal static float GetScreenSegmentDistanceSqr(
@@ -569,6 +783,12 @@ namespace PedestrianCrossingToolkit
                 PruneDuplicateAssets();
                 if (Assets.Count == 0)
                     _autoRebuildBuiltStructures = false;
+
+                PedestrianCrossingLog.UnityInfo("Saved crossings restored: count="
+                          + Assets.Count
+                          + " dataVersion="
+                          + version
+                          + ".");
 
                 PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pending crossing restore flags: version="
                           + version

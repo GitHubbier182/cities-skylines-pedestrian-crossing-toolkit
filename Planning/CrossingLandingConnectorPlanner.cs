@@ -191,6 +191,7 @@ namespace PedestrianCrossingToolkit
         private static CrossingLandingAccessAssetWorkOrder[] AccessAssetBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
         private static int _workOrderCount;
         private static int _accessAssetCount;
+        private static int _revision;
         private static CrossingLandingConnectorSummary _lastSummary = CrossingLandingConnectorSummary.Empty;
 
         public static CrossingLandingConnectorSummary LastSummary
@@ -206,6 +207,11 @@ namespace PedestrianCrossingToolkit
         public static int WorkOrderCount
         {
             get { return _workOrderCount; }
+        }
+
+        internal static int Revision
+        {
+            get { return _revision; }
         }
 
         public static void Refresh(string reason, CrossingConnectivityLink[] links, int linkCount, CrossingConnectivityCandidate[] candidates, int candidateCount)
@@ -263,6 +269,7 @@ namespace PedestrianCrossingToolkit
                       + CountAccessAssets(CrossingLandingAccessAssetKind.BridgeStairRampLanding)
                       + " subway="
                       + CountAccessAssets(CrossingLandingAccessAssetKind.SubwayEntrance));
+            AdvanceRevision();
             LogWorkOrders(reason);
             LogAccessAssets(reason);
         }
@@ -272,6 +279,12 @@ namespace PedestrianCrossingToolkit
             _workOrderCount = 0;
             _accessAssetCount = 0;
             _lastSummary = CrossingLandingConnectorSummary.Empty;
+            AdvanceRevision();
+        }
+
+        private static void AdvanceRevision()
+        {
+            _revision = _revision >= int.MaxValue ? 1 : _revision + 1;
         }
 
         public static int CopyWorkOrdersTo(CrossingLandingConnectorWorkOrder[] buffer)
