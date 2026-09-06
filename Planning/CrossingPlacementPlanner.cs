@@ -193,8 +193,18 @@ namespace PedestrianCrossingToolkit
             if ((node.m_flags & NetNode.Flags.Created) == 0 || node.CountSegments() != 2)
                 return false;
 
-            ushort firstSegmentId = node.GetSegment(0);
-            ushort secondSegmentId = node.GetSegment(1);
+            ushort firstSegmentId = 0;
+            ushort secondSegmentId = 0;
+            for (int i = 0; i < 8; i++)
+            {
+                ushort attached = node.GetSegment(i);
+                if (attached == 0)
+                    continue;
+                if (firstSegmentId == 0)
+                    firstSegmentId = attached;
+                else
+                    secondSegmentId = attached;
+            }
             if (firstSegmentId == 0 || secondSegmentId == 0)
                 return false;
 

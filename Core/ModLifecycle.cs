@@ -33,28 +33,60 @@ namespace PedestrianCrossingToolkit
 
     public class PedestrianCrossingToolkitLoading : LoadingExtensionBase
     {
+        private static bool _releaseNoticePending;
+
+        internal static void ProcessReleaseNotice()
+        {
+            if (!_releaseNoticePending)
+                return;
+            UIView view = UIView.GetAView();
+            if (view == null)
+                return;
+            Transform root = view.transform;
+            for (int i = 0; i < root.childCount; i++)
+            {
+                UIPanel panel = root.GetChild(i).GetComponent<UIPanel>();
+                if (panel != null && panel.name == "ScratchyBaldOneTimeUpdateNoticePanel")
+                    return;
+            }
+            _releaseNoticePending = false;
+            OneTimeUpdateNoticePanel.ShowIfNeeded(view, ReleaseNotice);
+        }
+
         private static readonly ReleaseNoticeContent ReleaseNotice = new ReleaseNoticeContent(
             "PedestrianCrossingToolkit.ShownReleaseNoticeId",
-            "v2.1.0",
-            "Pedestrian Crossing Toolkit 2.1.0",
-            "Selectable crossings and smarter Auto Scan",
+            "v2.1.1",
+            "Pedestrian Crossing Toolkit 2.1.1",
+            "Lower crossing-management overhead",
             string.Empty,
             "PCT",
             new[]
             {
-                "Hover over a PCT crossing with the normal city tool to see its cyan outline, then click it to open that crossing's details—even when Roads > Crossing is closed and no information view is active.",
-                "Only the crossing you select keeps a detail panel, avoiding the clutter and frame-rate cost of automatically updating panels for every visible crossing.",
-                "Selection clears naturally when you click elsewhere, right-click, press Escape, choose another tool or remove the crossing.",
-                "Auto Scan now reads active walking routes once and gives busy junction arms first consideration for pedestrian bridges or subways before it considers other crossing improvements.",
-                "Every eligible arm can qualify even without a vanilla crossing marker. Different arms at the same junction can be chosen, while duplicate arms remain blocked.",
-                "Signals do not use up the junction bridge/subway allowance, and standard crossings stay at least 250 units from vanilla crossings, existing PCT crossings and earlier suggestions.",
-                "Auto Scan no longer waits for a one-minute observation period. It prepares candidates and current demand in small batches, then immediately shows the complete preview or applies the result."
+                "Removes a repeated UI search from normal crossing hover checks, targeting the frame-rate loss that continued even away from crossings.",
+                "Combines compatible opaque crossing details into fewer local renderers while retaining the complete structures, transparent pieces and weather-responsive roofs.",
+                "Reduces background crossing-check overhead in cities with many PCT crossings, while keeping road-change detection and crossing protection active.",
+                "Streamlines signal scheduling while retaining demand priority and waiting for pedestrians to clear before releasing vehicles.",
+                "Reuses crossing-highlight drawing buffers while you move the camera and skips unchanged weather-surface updates.",
+                "Keeps large marker displays complete, releases temporary drawing meshes and avoids rebuilding unchanged subway route previews when the camera moves.",
+                "Preserves bridge access orientation, pending crossing cleanup and original crossing permissions across new saves, with safer road-replacement and signal-state recovery.",
+                "Corrects road-join traversal after road edits, refreshes placement guides reliably and reports incomplete crossing construction.",
+                "Uses local searches for nearby subway entrances and continues long pedestrian-route snapshots in small Auto Scan steps."
             },
             true,
             string.Empty,
             null,
             new[]
             {
+                new ReleaseNoticeVersion("v2.1.0", "3 September 2026, 19:28 BST", new[]
+                {
+                    "Hover over a PCT crossing with the normal city tool to see its cyan outline, then click it to open that crossing's details—even when Roads > Crossing is closed and no information view is active.",
+                    "Only the crossing you select keeps a detail panel, avoiding the clutter and frame-rate cost of automatically updating panels for every visible crossing.",
+                    "Selection clears naturally when you click elsewhere, right-click, press Escape, choose another tool or remove the crossing.",
+                    "Auto Scan now reads active walking routes once and gives busy junction arms first consideration for pedestrian bridges or subways before it considers other crossing improvements.",
+                    "Every eligible arm can qualify even without a vanilla crossing marker. Different arms at the same junction can be chosen, while duplicate arms remain blocked.",
+                    "Signals do not use up the junction bridge/subway allowance, and standard crossings stay at least 250 units from vanilla crossings, existing PCT crossings and earlier suggestions.",
+                    "Auto Scan no longer waits for a one-minute observation period. It prepares candidates and current demand in small batches, then immediately shows the complete preview or applies the result."
+                }, true),
                 new ReleaseNoticeVersion("v2.0.3", "12 August 2026, 21:29 BST", new[]
                 {
                     "Improves support logging, protected Bulldoze selection, Crossing-tab lifecycle boundaries and paced signal processing.",
@@ -150,7 +182,7 @@ namespace PedestrianCrossingToolkit
             {
                 PedestrianCrossingRoadsTab.CreateIfNeeded(view);
                 CrossingAppliedOverlay.CreateIfNeeded(view);
-                OneTimeUpdateNoticePanel.ShowIfNeeded(view, ReleaseNotice);
+                _releaseNoticePending = true;
             }
 
             PedestrianCrossingLog.UnityInfo(
@@ -162,6 +194,7 @@ namespace PedestrianCrossingToolkit
         {
             base.OnLevelUnloading();
 
+            _releaseNoticePending = false;
             PedestrianCrossingScanCoordinator.Shutdown();
             PedestrianCrossingBulldozeHarmony.Unpatch();
             PedestrianCrossingToolkitThreading.ClearMainThreadActions();
@@ -212,6 +245,7 @@ namespace PedestrianCrossingToolkit
                 if (!PedestrianCrossingToolkitState.Enabled)
                     return;
 
+                PedestrianCrossingToolkitLoading.ProcessReleaseNotice();
                 PedestrianCrossingToolkitState.ProcessDeferredLoadWork(realTimeDelta);
                 PedestrianCrossingToolkitState.ProcessAutoScanObservation(realTimeDelta);
                 PedestrianCrossingToolkitState.ProcessNetworkDependencyChanges(realTimeDelta);
@@ -275,6 +309,8 @@ namespace PedestrianCrossingToolkit
     public class PedestrianCrossingToolkitSerializable : SerializableDataExtensionBase
     {
         private const string DataId = "PedestrianCrossingToolkit.PendingAssets.v1";
+        private const string SuppressionDataId = "PedestrianCrossingToolkit.CrossingPermissions.v1";
+        private const string CleanupDataId = "PedestrianCrossingToolkit.PendingPathCleanup.v1";
 
         public override void OnLoadData()
         {
@@ -287,15 +323,34 @@ namespace PedestrianCrossingToolkit
                 if (data == null || data.Length == 0)
                 {
                     PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] No saved pending crossings found.");
-                    return;
                 }
-
-                int count = CrossingPlacementRegistry.Restore(data);
-                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Restored pending crossings: count=" + count);
+                else
+                {
+                    int count = CrossingPlacementRegistry.Restore(data);
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Restored pending crossings: count=" + count);
+                }
             }
             catch (Exception e)
             {
                 Debug.LogError("[PedestrianCrossingToolkit] Failed to restore pending crossings: " + e);
+            }
+            try
+            {
+                CrossingPathBuilder.RestoreDeferredNetworkReleases(
+                    serializableDataManager.LoadData(CleanupDataId));
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("[PedestrianCrossingToolkit] Failed to restore pending path cleanup; native records retained: " + e);
+            }
+            try
+            {
+                GradeSeparatedVanillaCrossingSuppression.RestoreSavedPermissions(
+                    serializableDataManager.LoadData(SuppressionDataId));
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("[PedestrianCrossingToolkit] Failed to restore original crossing permissions: " + e);
             }
         }
 
@@ -305,8 +360,12 @@ namespace PedestrianCrossingToolkit
 
             try
             {
+                serializableDataManager.SaveData(SuppressionDataId,
+                    GradeSeparatedVanillaCrossingSuppression.SerializePermissions());
                 byte[] data = CrossingPlacementRegistry.Serialize();
                 serializableDataManager.SaveData(DataId, data);
+                serializableDataManager.SaveData(CleanupDataId,
+                    CrossingPathBuilder.SerializeDeferredNetworkReleases());
                 PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Saved pending crossings: count="
                           + CrossingPlacementRegistry.Count
                           + " autoRebuildBuiltStructures="

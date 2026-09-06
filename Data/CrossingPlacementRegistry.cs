@@ -8,7 +8,11 @@ namespace PedestrianCrossingToolkit
     public static class CrossingPlacementRegistry
     {
         private static readonly List<CrossingPlacementAsset> Assets = new List<CrossingPlacementAsset>();
-        private const int SerializationVersion = 7;
+        private static readonly Dictionary<int, CrossingPlacementAsset> AssetsById =
+            new Dictionary<int, CrossingPlacementAsset>();
+        private const int SerializationVersion = 8;
+        private static readonly HashSet<int> RestoredFlippedAssets = new HashSet<int>();
+        private static readonly HashSet<int> RestoredRecoveryAssets = new HashSet<int>();
         private const int MaxSerializedAssetCount = 65536;
         private const int MinimumSerializedAssetBytes = 27;
         private const int MaxSignalRoadSegments = 8;
@@ -29,6 +33,7 @@ namespace PedestrianCrossingToolkit
         private static readonly Dictionary<int, List<CrossingLandingAccessAssetWorkOrder>> SpatialPickAccessByAssetId =
             new Dictionary<int, List<CrossingLandingAccessAssetWorkOrder>>();
         private static readonly HashSet<int> SpatialPickCandidateAssetIds = new HashSet<int>();
+        private static readonly HashSet<int> SpatialPickLargeSpanAssetIds = new HashSet<int>();
         private static int _spatialPickRegistryRevision = -1;
         private static int _spatialPickAccessRevision = -1;
         private static int _revision;
@@ -70,11 +75,12 @@ namespace PedestrianCrossingToolkit
         {
             int removedCount = RemoveMatchingAssets(placement, plan, out replaced);
             didReplace = removedCount > 0;
-            if (!didReplace && Assets.Count >= MaxSerializedAssetCount)
+            if (!didReplace && Assets.Count + PedestrianCrossingToolkitApi.RecoveryAssetCount >= MaxSerializedAssetCount)
                 throw new InvalidOperationException("PCT cannot register more than " + MaxSerializedAssetCount + " persistent crossings in one city.");
 
             CrossingPlacementAsset asset = new CrossingPlacementAsset(AllocateAssetId(), placement, plan, signalRoadState);
             Assets.Add(asset);
+            AssetsById[asset.Id] = asset;
             _revision++;
 
             PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pending asset added: id=" + asset.Id
@@ -114,7 +120,7 @@ namespace PedestrianCrossingToolkit
                     continue;
 
                 asset = Assets[i];
-                Assets.RemoveAt(i);
+                RemoveIndexedAssetAt(i);
                 _revision++;
                 PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Pending asset removed by id: id="
                           + asset.Id
@@ -131,7 +137,10 @@ namespace PedestrianCrossingToolkit
 
         public static void Reset()
         {
+            RestoredFlippedAssets.Clear();
+            RestoredRecoveryAssets.Clear();
             Assets.Clear();
+            AssetsById.Clear();
             _nextId = 1;
             _autoRebuildBuiltStructures = false;
             _revision++;
@@ -147,7 +156,7 @@ namespace PedestrianCrossingToolkit
             }
 
             asset = Assets[index];
-            Assets.RemoveAt(index);
+            RemoveIndexedAssetAt(index);
             _revision++;
             return true;
         }
@@ -176,17 +185,16 @@ namespace PedestrianCrossingToolkit
 
         public static bool TryGetAssetById(int assetId, out CrossingPlacementAsset asset)
         {
-            for (int i = 0; i < Assets.Count; i++)
-            {
-                if (Assets[i].Id != assetId)
-                    continue;
-
-                asset = Assets[i];
+            if (AssetsById.TryGetValue(assetId, out asset))
                 return true;
-            }
-
             asset = CrossingPlacementAsset.None;
             return false;
+        }
+
+        private static void RemoveIndexedAssetAt(int index)
+        {
+            AssetsById.Remove(Assets[index].Id);
+            Assets.RemoveAt(index);
         }
 
         internal static bool TryGetAssetNearScreen(
@@ -198,23 +206,28 @@ namespace PedestrianCrossingToolkit
             out CrossingPlacementAsset asset)
         {
             asset = CrossingPlacementAsset.None;
-            if (camera == null || Assets.Count == 0)
+            if (camera == null || Assets.Count == 0 || !IsFinite(worldPosition)
+                || float.IsNaN(worldRadius) || float.IsInfinity(worldRadius))
                 return false;
 
             EnsureSpatialPickIndex();
             SpatialPickCandidateAssetIds.Clear();
+            SpatialPickCandidateAssetIds.UnionWith(SpatialPickLargeSpanAssetIds);
             float radius = Mathf.Max(SpatialPickIndexPadding, worldRadius);
             int minCellX = Mathf.FloorToInt((worldPosition.x - radius) / SpatialPickCellSize);
             int maxCellX = Mathf.FloorToInt((worldPosition.x + radius) / SpatialPickCellSize);
             int minCellZ = Mathf.FloorToInt((worldPosition.z - radius) / SpatialPickCellSize);
             int maxCellZ = Mathf.FloorToInt((worldPosition.z + radius) / SpatialPickCellSize);
-            for (int cellZ = minCellZ; cellZ <= maxCellZ; cellZ++)
+            bool largeQuery = IsLargePickRange(minCellX, maxCellX, minCellZ, maxCellZ);
+            if (largeQuery)
+                SpatialPickCandidateAssetIds.UnionWith(SpatialPickAssetsById.Keys);
+            for (long cellZ = minCellZ; !largeQuery && cellZ <= maxCellZ; cellZ++)
             {
-                for (int cellX = minCellX; cellX <= maxCellX; cellX++)
+                for (long cellX = minCellX; cellX <= maxCellX; cellX++)
                 {
                     List<int> cellAssetIds;
                     if (!SpatialPickAssetIdsByCell.TryGetValue(
-                            MakeRestoreCellKey(cellX, cellZ),
+                            MakeRestoreCellKey((int)cellX, (int)cellZ),
                             out cellAssetIds))
                     {
                         continue;
@@ -354,6 +367,7 @@ namespace PedestrianCrossingToolkit
             }
 
             SpatialPickAssetIdsByCell.Clear();
+            SpatialPickLargeSpanAssetIds.Clear();
             SpatialPickAssetsById.Clear();
             SpatialPickAccessByAssetId.Clear();
             for (int i = 0; i < Assets.Count; i++)
@@ -395,6 +409,19 @@ namespace PedestrianCrossingToolkit
             _spatialPickAccessRevision = accessRevision;
         }
 
+        internal static int CopyIndexedAccessForAsset(
+            int assetId, ref CrossingLandingAccessAssetWorkOrder[] buffer)
+        {
+            EnsureSpatialPickIndex();
+            List<CrossingLandingAccessAssetWorkOrder> access;
+            if (!SpatialPickAccessByAssetId.TryGetValue(assetId, out access))
+                return 0;
+
+            ManagerCapacity.EnsureArrayCapacity(ref buffer, access.Count);
+            access.CopyTo(buffer);
+            return access.Count;
+        }
+
         private static void IndexSpatialPickAsset(CrossingPlacementAsset asset)
         {
             if (!asset.Plan.IsValid)
@@ -434,11 +461,16 @@ namespace PedestrianCrossingToolkit
                 (Mathf.Min(first.z, second.z) - SpatialPickIndexPadding) / SpatialPickCellSize);
             int maxCellZ = Mathf.FloorToInt(
                 (Mathf.Max(first.z, second.z) + SpatialPickIndexPadding) / SpatialPickCellSize);
-            for (int cellZ = minCellZ; cellZ <= maxCellZ; cellZ++)
+            if (IsLargePickRange(minCellX, maxCellX, minCellZ, maxCellZ))
             {
-                for (int cellX = minCellX; cellX <= maxCellX; cellX++)
+                SpatialPickLargeSpanAssetIds.Add(assetId);
+                return;
+            }
+            for (long cellZ = minCellZ; cellZ <= maxCellZ; cellZ++)
+            {
+                for (long cellX = minCellX; cellX <= maxCellX; cellX++)
                 {
-                    long key = MakeRestoreCellKey(cellX, cellZ);
+                    long key = MakeRestoreCellKey((int)cellX, (int)cellZ);
                     List<int> assetIds;
                     if (!SpatialPickAssetIdsByCell.TryGetValue(key, out assetIds))
                     {
@@ -450,6 +482,13 @@ namespace PedestrianCrossingToolkit
                         assetIds.Add(assetId);
                 }
             }
+        }
+
+        private static bool IsLargePickRange(int minX, int maxX, int minZ, int maxZ)
+        {
+            long width = (long)maxX - minX + 1;
+            long height = (long)maxZ - minZ + 1;
+            return width <= 0 || height <= 0 || width > 4096 || height > 4096 || width * height > 4096;
         }
 
         private static void GetAccessFootprintSpan(
@@ -664,16 +703,18 @@ namespace PedestrianCrossingToolkit
 
         public static byte[] Serialize()
         {
+            List<CrossingPlacementAsset> savedAssets = new List<CrossingPlacementAsset>(Assets);
+            PedestrianCrossingToolkitApi.AppendRecoveryAssets(savedAssets);
             using (MemoryStream stream = new MemoryStream())
             {
                 using (BinaryWriter writer = new BinaryWriter(stream))
                 {
                     writer.Write(SerializationVersion);
-                    writer.Write(_autoRebuildBuiltStructures && Assets.Count > 0);
-                    writer.Write(Assets.Count);
-                    for (int i = 0; i < Assets.Count; i++)
+                    writer.Write((_autoRebuildBuiltStructures || PedestrianCrossingToolkitApi.RecoveryAssetCount > 0) && savedAssets.Count > 0);
+                    writer.Write(savedAssets.Count);
+                    for (int i = 0; i < savedAssets.Count; i++)
                     {
-                        CrossingPlacementAsset asset = Assets[i];
+                        CrossingPlacementAsset asset = savedAssets[i];
                         CrossingPlacementRecord placement = asset.Placement;
                         writer.Write(asset.Id);
                         writer.Write((int)placement.Mode);
@@ -701,6 +742,8 @@ namespace PedestrianCrossingToolkit
                         }
 
                         WriteSignalRoadStateSnapshot(writer, asset.SignalRoadState);
+                        writer.Write(asset.Plan.FlipBridgeAccess || RestoredFlippedAssets.Contains(asset.Id));
+                        writer.Write(PedestrianCrossingToolkitApi.IsRecoveryAssetId(asset.Id) || RestoredRecoveryAssets.Contains(asset.Id));
                     }
                 }
 
@@ -721,15 +764,17 @@ namespace PedestrianCrossingToolkit
                 }
 
                 bool autoRebuildBuiltStructures = version == 1 || reader.ReadBoolean();
-                int count = Math.Max(reader.ReadInt32(), 0);
+                int count = reader.ReadInt32();
                 long remainingBytes = stream.Length - stream.Position;
-                if (count > MaxSerializedAssetCount
+                if (count < 0 || count > MaxSerializedAssetCount
                     || count > remainingBytes / MinimumSerializedAssetBytes)
                 {
                     throw new InvalidDataException("Pending crossing asset count is not valid for the saved data length: " + count);
                 }
 
                 List<CrossingPlacementAsset> restoredAssets = new List<CrossingPlacementAsset>(count);
+                HashSet<int> flippedIds = new HashSet<int>();
+                HashSet<int> recoveryIds = new HashSet<int>();
                 int maxId = 0;
                 HashSet<int> restoredIds = new HashSet<int>();
                 for (int i = 0; i < count; i++)
@@ -786,7 +831,19 @@ namespace PedestrianCrossingToolkit
 
                     SignalRoadStateSnapshot signalRoadState = SignalRoadStateSnapshot.Empty;
                     if (version >= 7)
-                        signalRoadState = ReadSignalRoadStateSnapshot(reader);
+                        signalRoadState = ReadSignalRoadStateSnapshot(reader, version);
+
+                    if (version >= 8)
+                    {
+                        if (reader.ReadBoolean()) flippedIds.Add(id);
+                        if (reader.ReadBoolean()) recoveryIds.Add(id);
+                    }
+
+                    if (!IsPersistentPlacementMode(mode) || segmentId == 0
+                        || !IsFinitePlacementPoint(worldPosition, segmentPosition)
+                        || (hasSecondaryPoint && (secondarySegmentId == 0
+                            || !IsFinitePlacementPoint(secondaryWorldPosition, secondarySegmentPosition))))
+                        throw new InvalidDataException("Pending crossing placement is invalid: " + id);
 
                     CrossingPlacementRecord placement = new CrossingPlacementRecord(
                         mode,
@@ -812,8 +869,15 @@ namespace PedestrianCrossingToolkit
                         maxId = id;
                 }
 
+                RestoredFlippedAssets.Clear();
+                RestoredRecoveryAssets.Clear();
+                RestoredFlippedAssets.UnionWith(flippedIds);
+                RestoredRecoveryAssets.UnionWith(recoveryIds);
                 Assets.Clear();
+                AssetsById.Clear();
                 Assets.AddRange(restoredAssets);
+                for (int i = 0; i < Assets.Count; i++)
+                    AssetsById[Assets[i].Id] = Assets[i];
                 _nextId = maxId >= int.MaxValue - 1 ? 1 : maxId + 1;
                 _autoRebuildBuiltStructures = autoRebuildBuiltStructures;
                 _revision++;
@@ -838,22 +902,12 @@ namespace PedestrianCrossingToolkit
         private static int AllocateAssetId()
         {
             int candidate = _nextId;
-            for (int attempts = 0; attempts <= Assets.Count; attempts++)
+            for (int attempts = 0; attempts <= Assets.Count + PedestrianCrossingToolkitApi.RecoveryAssetCount; attempts++)
             {
                 if (candidate <= 0 || candidate == int.MaxValue)
                     candidate = 1;
 
-                bool inUse = false;
-                for (int i = 0; i < Assets.Count; i++)
-                {
-                    if (Assets[i].Id == candidate)
-                    {
-                        inUse = true;
-                        break;
-                    }
-                }
-
-                if (!inUse)
+                if (!AssetsById.ContainsKey(candidate) && !PedestrianCrossingToolkitApi.IsRecoveryAssetId(candidate))
                 {
                     _nextId = candidate >= int.MaxValue - 1 ? 1 : candidate + 1;
                     return candidate;
@@ -865,6 +919,21 @@ namespace PedestrianCrossingToolkit
             throw new InvalidOperationException("No PCT crossing asset IDs are available.");
         }
 
+        private static bool IsPersistentPlacementMode(PedestrianToolMode mode)
+        {
+            return mode == PedestrianToolMode.MidBlockCrossing
+                || mode == PedestrianToolMode.SignalCrossing
+                || mode == PedestrianToolMode.SubwayLink
+                || mode == PedestrianToolMode.SubwayPointToPoint
+                || mode == PedestrianToolMode.PedestrianBridge;
+        }
+
+        private static bool IsFinitePlacementPoint(Vector3 point, float position)
+        {
+            return IsFinite(point) && !float.IsNaN(point.y) && !float.IsInfinity(point.y)
+                && !float.IsNaN(position) && !float.IsInfinity(position);
+        }
+
         public static int RebuildPlans()
         {
             int rebuilt = 0;
@@ -872,16 +941,31 @@ namespace PedestrianCrossingToolkit
             for (int i = Assets.Count - 1; i >= 0; i--)
             {
                 CrossingPlacementAsset asset = Assets[i];
+                if (RestoredRecoveryAssets.Contains(asset.Id))
+                {
+                    CrossingPlacementAsset rebound;
+                    string error;
+                    if (PedestrianCrossingToolkitState.TryRebindAssetForRoadReplacement(asset, out rebound, out error))
+                        asset = rebound;
+                }
                 CrossingPlacementPlan plan = CrossingPlacementPlanner.BuildExisting(asset);
+                if (plan.IsValid && RestoredFlippedAssets.Contains(asset.Id) != plan.FlipBridgeAccess)
+                    plan = plan.WithBridgeAccessFlipped();
+                if (!plan.IsValid && RestoredRecoveryAssets.Contains(asset.Id))
+                    continue;
                 if (!plan.IsValid)
                 {
-                    Assets.RemoveAt(i);
+                    RemoveIndexedAssetAt(i);
                     _revision++;
                     removedInvalid++;
                     continue;
                 }
 
+                RestoredFlippedAssets.Remove(asset.Id);
+                RestoredRecoveryAssets.Remove(asset.Id);
                 Assets[i] = new CrossingPlacementAsset(asset.Id, asset.Placement, plan, asset.SignalRoadState);
+                AssetsById[asset.Id] = Assets[i];
+                _revision++;
                 rebuilt++;
             }
 
@@ -944,7 +1028,7 @@ namespace PedestrianCrossingToolkit
                 if (removed == 0)
                     newestRemoved = Assets[i];
 
-                Assets.RemoveAt(i);
+                RemoveIndexedAssetAt(i);
                 removed++;
             }
 
@@ -982,7 +1066,7 @@ namespace PedestrianCrossingToolkit
                 return 0;
 
             newestRemoved = Assets[bestIndex];
-            Assets.RemoveAt(bestIndex);
+            RemoveIndexedAssetAt(bestIndex);
             _revision++;
             return 1;
         }
@@ -1159,10 +1243,14 @@ namespace PedestrianCrossingToolkit
                 writer.Write((int)segment.PedestrianState);
                 writer.Write(segment.Vehicles);
                 writer.Write(segment.Pedestrians);
+                writer.Write(segment.HasNativeIdentity);
+                writer.Write(segment.NativeBuildIndex);
             }
+            writer.Write(snapshot.HasNativeIdentity);
+            writer.Write(snapshot.NativeBuildIndex);
         }
 
-        private static SignalRoadStateSnapshot ReadSignalRoadStateSnapshot(BinaryReader reader)
+        private static SignalRoadStateSnapshot ReadSignalRoadStateSnapshot(BinaryReader reader, int version)
         {
             if (!reader.ReadBoolean())
                 return SignalRoadStateSnapshot.Empty;
@@ -1182,10 +1270,13 @@ namespace PedestrianCrossingToolkit
                     (RoadBaseAI.TrafficLightState)reader.ReadInt32(),
                     (RoadBaseAI.TrafficLightState)reader.ReadInt32(),
                     reader.ReadBoolean(),
-                    reader.ReadBoolean());
+                    reader.ReadBoolean(),
+                    version >= 8 && reader.ReadBoolean(),
+                    version >= 8 ? reader.ReadUInt32() : 0);
             }
 
-            return new SignalRoadStateSnapshot(true, nodeId, nodeFlags, segments);
+            return new SignalRoadStateSnapshot(true, nodeId, nodeFlags, segments,
+                version >= 8 && reader.ReadBoolean(), version >= 8 ? reader.ReadUInt32() : 0);
         }
 
         private static bool IsSharedGradeSeparatedApproach(CrossingPlacementAsset existing, CrossingPlacementRecord placement, CrossingPlacementPlan plan)
@@ -1268,7 +1359,7 @@ namespace PedestrianCrossingToolkit
                 for (int i = Assets.Count - 1; i >= 0; i--)
                 {
                     if (remove[i])
-                        Assets.RemoveAt(i);
+                        RemoveIndexedAssetAt(i);
                 }
 
                 _revision++;

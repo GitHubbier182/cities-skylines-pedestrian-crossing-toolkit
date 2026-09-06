@@ -216,13 +216,17 @@ namespace PedestrianCrossingToolkit
         public readonly ushort NodeId;
         public readonly NetNode.Flags NodeFlags;
         public readonly SignalRoadSegmentState[] Segments;
+        public readonly bool HasNativeIdentity;
+        public readonly uint NativeBuildIndex;
 
-        public SignalRoadStateSnapshot(bool hasSnapshot, ushort nodeId, NetNode.Flags nodeFlags, SignalRoadSegmentState[] segments)
+        public SignalRoadStateSnapshot(bool hasSnapshot, ushort nodeId, NetNode.Flags nodeFlags, SignalRoadSegmentState[] segments, bool hasNativeIdentity = false, uint nativeBuildIndex = 0)
         {
             HasSnapshot = hasSnapshot;
             NodeId = nodeId;
             NodeFlags = nodeFlags;
             Segments = segments ?? new SignalRoadSegmentState[0];
+            HasNativeIdentity = hasNativeIdentity;
+            NativeBuildIndex = nativeBuildIndex;
         }
 
         public int SegmentCount
@@ -240,6 +244,8 @@ namespace PedestrianCrossingToolkit
         public readonly RoadBaseAI.TrafficLightState PedestrianState;
         public readonly bool Vehicles;
         public readonly bool Pedestrians;
+        public readonly bool HasNativeIdentity;
+        public readonly uint NativeBuildIndex;
 
         public SignalRoadSegmentState(
             ushort segmentId,
@@ -248,7 +254,7 @@ namespace PedestrianCrossingToolkit
             RoadBaseAI.TrafficLightState vehicleState,
             RoadBaseAI.TrafficLightState pedestrianState,
             bool vehicles,
-            bool pedestrians)
+            bool pedestrians, bool hasNativeIdentity = false, uint nativeBuildIndex = 0)
         {
             SegmentId = segmentId;
             StartNode = startNode;
@@ -257,6 +263,8 @@ namespace PedestrianCrossingToolkit
             PedestrianState = pedestrianState;
             Vehicles = vehicles;
             Pedestrians = pedestrians;
+            HasNativeIdentity = hasNativeIdentity;
+            NativeBuildIndex = nativeBuildIndex;
         }
     }
 

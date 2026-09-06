@@ -145,7 +145,8 @@ namespace PedestrianCrossingToolkit
                 return 0;
 
             int scanned = 0;
-            int segmentCount = node.CountSegments();
+            // Native node slots are sparse after a segment is removed.
+            const int segmentCount = 8;
             for (int i = 0; i < segmentCount; i++)
             {
                 ushort segmentId = node.GetSegment(i);

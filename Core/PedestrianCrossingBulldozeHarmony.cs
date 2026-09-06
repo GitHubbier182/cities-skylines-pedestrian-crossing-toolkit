@@ -296,13 +296,7 @@ namespace PedestrianCrossingToolkit
                 return false;
             }
 
-            if (CrossingPlacementRegistry.TryGetAssetNearScreen(
-                    camera,
-                    screenPosition,
-                    worldPosition,
-                    worldRadius,
-                    PickRadiusPixels,
-                    out asset))
+            if (TryGetPointerSpatialAsset(camera, screenPosition, worldPosition, worldRadius, out asset))
             {
                 return true;
             }
@@ -310,7 +304,27 @@ namespace PedestrianCrossingToolkit
             return false;
         }
 
+        private static bool TryGetPointerSpatialAsset(Camera camera, Vector2 screenPosition,
+            Vector3 worldPosition, float worldRadius, out CrossingPlacementAsset asset)
+        {
+            long timingStarted = PctRenderTimingDiagnostics.Begin();
+            try
+            {
+                return CrossingPlacementRegistry.TryGetAssetNearScreen(camera, screenPosition,
+                    worldPosition, worldRadius, PickRadiusPixels, out asset);
+            }
+            finally { PctRenderTimingDiagnostics.End(4, timingStarted); }
+        }
+
         private static bool TryGetPointerTerrainPosition(
+            Camera camera, Vector2 screenPosition, out Vector3 worldPosition, out float worldRadius)
+        {
+            long timingStarted = PctRenderTimingDiagnostics.Begin();
+            try { return TryGetPointerTerrainPositionCore(camera, screenPosition, out worldPosition, out worldRadius); }
+            finally { PctRenderTimingDiagnostics.End(3, timingStarted); }
+        }
+
+        private static bool TryGetPointerTerrainPositionCore(
             Camera camera,
             Vector2 screenPosition,
             out Vector3 worldPosition,
@@ -365,6 +379,13 @@ namespace PedestrianCrossingToolkit
 
         private static bool RenderOverlayPrefix(DefaultTool __instance)
         {
+            long timingStarted = PctRenderTimingDiagnostics.Begin();
+            try { return RenderOverlayPrefixCore(__instance); }
+            finally { PctRenderTimingDiagnostics.End(0, timingStarted); }
+        }
+
+        private static bool RenderOverlayPrefixCore(DefaultTool __instance)
+        {
             if (__instance != null
                 && __instance.GetType() == typeof(DefaultTool)
                 && _defaultSelectionOperational)
@@ -404,6 +425,13 @@ namespace PedestrianCrossingToolkit
         }
 
         private static void RenderOverlayPostfix(DefaultTool __instance, RenderManager.CameraInfo cameraInfo)
+        {
+            long timingStarted = PctRenderTimingDiagnostics.Begin();
+            try { RenderOverlayPostfixCore(__instance, cameraInfo); }
+            finally { PctRenderTimingDiagnostics.End(1, timingStarted); }
+        }
+
+        private static void RenderOverlayPostfixCore(DefaultTool __instance, RenderManager.CameraInfo cameraInfo)
         {
             if (__instance == null || cameraInfo == null)
                 return;
@@ -467,7 +495,16 @@ namespace PedestrianCrossingToolkit
 
         private static void UpdateDefaultToolHover(DefaultTool tool)
         {
+            long timingStarted = PctRenderTimingDiagnostics.Begin();
+            try { UpdateDefaultToolHoverCore(tool); }
+            finally { PctRenderTimingDiagnostics.End(2, timingStarted); }
+        }
+
+        private static void UpdateDefaultToolHoverCore(DefaultTool tool)
+        {
             _defaultHoveredAssetId = 0;
+            if (!PedestrianCrossingToolkitState.Enabled)
+                return;
             ToolController controller = ToolsModifierControl.toolController;
             Camera camera = Camera.main;
             if (controller == null
@@ -557,10 +594,8 @@ namespace PedestrianCrossingToolkit
             int assetId,
             Color color)
         {
-            ManagerCapacity.EnsureArrayCapacity(
-                ref _accessPickBuffer,
-                CrossingLandingConnectorPlanner.AccessAssetCount);
-            int accessCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(_accessPickBuffer);
+            int accessCount = CrossingPlacementRegistry.CopyIndexedAccessForAsset(
+                assetId, ref _accessPickBuffer);
             int max = Mathf.Min(accessCount, _accessPickBuffer.Length);
             for (int i = 0; i < max; i++)
             {

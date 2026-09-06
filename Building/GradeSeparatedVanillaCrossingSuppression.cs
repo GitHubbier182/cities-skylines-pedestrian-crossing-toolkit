@@ -4,8 +4,9 @@ using UnityEngine;
 
 namespace PedestrianCrossingToolkit
 {
-    public static class GradeSeparatedVanillaCrossingSuppression
+    public static partial class GradeSeparatedVanillaCrossingSuppression
     {
+        private static readonly object PermissionGate = new object();
         private const float SuppressionDistance = 5f;
         private const int AssetBufferSize = 1024;
 
@@ -57,12 +58,24 @@ namespace PedestrianCrossingToolkit
 
         private struct SuppressedEndSnapshot
         {
-            public readonly bool OriginalCrossingAllowed;
-            public readonly bool HasOriginalTrafficManagerAllowed;
-            public readonly bool OriginalTrafficManagerAllowed;
+            public bool OriginalCrossingAllowed;
+            public bool HasOriginalTrafficManagerAllowed;
+            public bool OriginalTrafficManagerAllowed;
             public bool TrafficManagerBanApplied;
+            public uint BuildIndex;
+            public ushort StartNode;
+            public ushort EndNode;
+            public string PrefabName;
+
+            public bool Matches(ref NetSegment segment)
+            {
+                return (segment.m_flags & NetSegment.Flags.Created) != 0
+                    && segment.m_buildIndex == BuildIndex && segment.m_startNode == StartNode
+                    && segment.m_endNode == EndNode && segment.Info != null && segment.Info.name == PrefabName;
+            }
 
             public SuppressedEndSnapshot(
+                ref NetSegment segment,
                 bool originalCrossingAllowed,
                 bool hasOriginalTrafficManagerAllowed,
                 bool originalTrafficManagerAllowed)
@@ -71,181 +84,224 @@ namespace PedestrianCrossingToolkit
                 HasOriginalTrafficManagerAllowed = hasOriginalTrafficManagerAllowed;
                 OriginalTrafficManagerAllowed = originalTrafficManagerAllowed;
                 TrafficManagerBanApplied = false;
+                BuildIndex = segment.m_buildIndex;
+                StartNode = segment.m_startNode;
+                EndNode = segment.m_endNode;
+                PrefabName = segment.Info == null ? string.Empty : segment.Info.name;
             }
         }
 
         public static int Reconcile(bool log, string reason)
         {
-            NetManager netManager = NetManager.instance;
-            if (netManager == null)
-                return 0;
-
-            TargetNodes.Clear();
-            TargetSegmentEnds.Clear();
-            int assetCount;
-            int spanCount = BuildSuppressionSpans(out assetCount);
-            int scannedEnds = 0;
-            int matchedEnds = 0;
-            if (spanCount > 0)
+            lock (PermissionGate)
             {
-                ScanNetworkForTargetNodes(netManager, ref scannedEnds, ref matchedEnds);
-            }
+                NetManager netManager = NetManager.instance;
+                if (netManager == null)
+                    return 0;
 
-            int tmpeRestores;
-            int restored = RestoreReleasedSegmentEnds(netManager, out tmpeRestores);
-            int tmpeBans;
-            int tmpeAlreadyBanned;
-            int changed = ApplyTargetSegmentEnds(netManager, out tmpeBans, out tmpeAlreadyBanned);
-            if (log)
-            {
-                bool tmpeAvailable = PedestrianCrossingToolkitState.TrafficManagerInteropAllowed
-                                     && TrafficManagerPedestrianCrossingIntegration.IsAvailable;
-                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Built vanilla surface suppression scan: reason="
-                          + reason
-                          + " assets="
-                          + assetCount
-                          + " spans="
-                          + spanCount
-                          + " scannedEnds="
-                          + scannedEnds
-                          + " matchedEnds="
-                          + matchedEnds
-                          + " targetNodes="
-                          + TargetNodes.Count
-                          + " targetEnds="
-                          + TargetSegmentEnds.Count
-                          + " changedEnds="
-                          + changed
-                          + " restoredEnds="
-                          + restored
-                          + " tmpe="
-                          + tmpeAvailable
-                          + " tmpeBans="
-                          + tmpeBans
-                          + " tmpeAlreadyBanned="
-                          + tmpeAlreadyBanned
-                          + " tmpeRestores="
-                          + tmpeRestores);
-            }
+                TargetNodes.Clear();
+                TargetSegmentEnds.Clear();
+                int assetCount;
+                int spanCount = BuildSuppressionSpans(out assetCount);
+                int scannedEnds = 0;
+                int matchedEnds = 0;
+                if (spanCount > 0)
+                {
+                    ScanNetworkForTargetNodes(netManager, ref scannedEnds, ref matchedEnds);
+                }
 
-            return changed;
+                int tmpeRestores;
+                int restored = RestoreReleasedSegmentEnds(netManager, out tmpeRestores);
+                int tmpeBans;
+                int tmpeAlreadyBanned;
+                int changed = ApplyTargetSegmentEnds(netManager, out tmpeBans, out tmpeAlreadyBanned);
+                if (log)
+                {
+                    bool tmpeAvailable = PedestrianCrossingToolkitState.TrafficManagerInteropAllowed
+                                         && TrafficManagerPedestrianCrossingIntegration.IsAvailable;
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Built vanilla surface suppression scan: reason="
+                              + reason
+                              + " assets="
+                              + assetCount
+                              + " spans="
+                              + spanCount
+                              + " scannedEnds="
+                              + scannedEnds
+                              + " matchedEnds="
+                              + matchedEnds
+                              + " targetNodes="
+                              + TargetNodes.Count
+                              + " targetEnds="
+                              + TargetSegmentEnds.Count
+                              + " changedEnds="
+                              + changed
+                              + " restoredEnds="
+                              + restored
+                              + " tmpe="
+                              + tmpeAvailable
+                              + " tmpeBans="
+                              + tmpeBans
+                              + " tmpeAlreadyBanned="
+                              + tmpeAlreadyBanned
+                              + " tmpeRestores="
+                              + tmpeRestores);
+                }
+
+                return changed;
+            }
         }
 
         public static int Clear(string reason)
         {
-            NetManager netManager = NetManager.instance;
-            if (netManager == null)
+            lock (PermissionGate)
             {
-                SuppressedEndSnapshots.Clear();
-                return 0;
-            }
+                NetManager netManager = NetManager.instance;
+                if (netManager == null)
+                    return 0;
 
-            RestoreBuffer.Clear();
-            foreach (KeyValuePair<SegmentEndKey, SuppressedEndSnapshot> snapshot in SuppressedEndSnapshots)
-                RestoreBuffer.Add(snapshot.Key);
+                RestoreBuffer.Clear();
+                foreach (KeyValuePair<SegmentEndKey, SuppressedEndSnapshot> snapshot in SuppressedEndSnapshots)
+                    RestoreBuffer.Add(snapshot.Key);
 
-            int restored = 0;
-            int tmpeRestores = 0;
-            for (int i = 0; i < RestoreBuffer.Count; i++)
-            {
-                SegmentEndKey key = RestoreBuffer[i];
-                SuppressedEndSnapshot snapshot;
-                if (!SuppressedEndSnapshots.TryGetValue(key, out snapshot))
-                    continue;
-
-                if (snapshot.TrafficManagerBanApplied
-                    && TrafficManagerPedestrianCrossingIntegration.SetPedestrianCrossingAllowed(
-                        key.SegmentId,
-                        key.StartNode,
-                        GetTrafficManagerRestoreAllowed(snapshot)))
+                int restored = 0;
+                int tmpeRestores = 0;
+                for (int i = 0; i < RestoreBuffer.Count; i++)
                 {
-                    tmpeRestores++;
+                    SegmentEndKey key = RestoreBuffer[i];
+                    SuppressedEndSnapshot snapshot;
+                    if (!SuppressedEndSnapshots.TryGetValue(key, out snapshot))
+                        continue;
+
+                    if (key.SegmentId == 0 || key.SegmentId >= netManager.m_segments.m_buffer.Length
+                        || !snapshot.Matches(ref netManager.m_segments.m_buffer[key.SegmentId]))
+                    {
+                        SuppressedEndSnapshots.Remove(key);
+                        continue;
+                    }
+
+                    bool tmpeRestored = !snapshot.TrafficManagerBanApplied
+                        || TrafficManagerPedestrianCrossingIntegration.SetPedestrianCrossingAllowed(
+                            key.SegmentId, key.StartNode, GetTrafficManagerRestoreAllowed(snapshot));
+                    if (snapshot.TrafficManagerBanApplied && tmpeRestored)
+                        tmpeRestores++;
+
+                    if (snapshot.OriginalCrossingAllowed && SetCrossingFlag(netManager, key, true))
+                        restored++;
+                    if (!tmpeRestored)
+                        continue;
+                    SuppressedEndSnapshots.Remove(key);
                 }
 
-                if (snapshot.OriginalCrossingAllowed && SetCrossingFlag(netManager, key, true))
-                    restored++;
-            }
+                int tracked = RestoreBuffer.Count;
+                TargetNodes.Clear();
+                TargetSegmentEnds.Clear();
+                if (tracked > 0 || restored > 0)
+                {
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Restored grade-separated vanilla crossing suppression: reason="
+                              + reason
+                              + " trackedEnds="
+                              + tracked
+                              + " restoredEnds="
+                              + restored
+                              + " tmpe="
+                              + (PedestrianCrossingToolkitState.TrafficManagerInteropAllowed
+                                 && TrafficManagerPedestrianCrossingIntegration.IsAvailable)
+                              + " tmpeRestores="
+                              + tmpeRestores);
+                }
 
-            int tracked = SuppressedEndSnapshots.Count;
-            SuppressedEndSnapshots.Clear();
-            TargetNodes.Clear();
-            TargetSegmentEnds.Clear();
-            if (tracked > 0 || restored > 0)
-            {
-                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Restored grade-separated vanilla crossing suppression: reason="
-                          + reason
-                          + " trackedEnds="
-                          + tracked
-                          + " restoredEnds="
-                          + restored
-                          + " tmpe="
-                          + (PedestrianCrossingToolkitState.TrafficManagerInteropAllowed
-                             && TrafficManagerPedestrianCrossingIntegration.IsAvailable)
-                          + " tmpeRestores="
-                          + tmpeRestores);
+                return restored;
             }
-
-            return restored;
         }
 
         public static int ForgetStateForLevelUnload(string reason)
         {
-            int tracked = SuppressedEndSnapshots.Count;
-            int targets = TargetSegmentEnds.Count;
-            SuppressedEndSnapshots.Clear();
-            TargetNodes.Clear();
-            TargetSegmentEnds.Clear();
-            RestoreBuffer.Clear();
-            if (tracked > 0 || targets > 0)
+            lock (PermissionGate)
             {
-                PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade-separated suppression unload state forgotten without restoring network flags: reason="
-                          + reason
-                          + " trackedEnds="
-                          + tracked
-                          + " targetEnds="
-                          + targets);
-            }
+                int tracked = SuppressedEndSnapshots.Count;
+                int targets = TargetSegmentEnds.Count;
+                SuppressedEndSnapshots.Clear();
+                TargetNodes.Clear();
+                TargetSegmentEnds.Clear();
+                RestoreBuffer.Clear();
+                if (tracked > 0 || targets > 0)
+                {
+                    PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Grade-separated suppression unload state forgotten without restoring network flags: reason="
+                              + reason
+                              + " trackedEnds="
+                              + tracked
+                              + " targetEnds="
+                              + targets);
+                }
 
-            return tracked;
+                return tracked;
+            }
         }
 
         public static bool HasActiveSuppressionForAsset(CrossingPlacementAsset asset)
         {
-            if (!asset.Plan.IsValid
-                || !GradeSeparatedPlacementGeometryResolver.IsGradeSeparated(asset.Plan.ApplicationKind)
-                || !RoadPlacementRules.IsRoadGradeSeparatedPlacementTarget(asset.Placement.SegmentId)
-                || SuppressedEndSnapshots.Count == 0)
+            lock (PermissionGate)
             {
-                return false;
-            }
-
-            GradeSeparatedPlacementGeometry geometry;
-            if (!GradeSeparatedPlacementGeometryResolver.TryBuild(asset, out geometry, false))
-                return false;
-
-            NetManager netManager = NetManager.instance;
-            if (netManager == null)
-                return false;
-
-            foreach (KeyValuePair<SegmentEndKey, SuppressedEndSnapshot> snapshot in SuppressedEndSnapshots)
-            {
-                SegmentEndKey key = snapshot.Key;
-                if (key.SegmentId == 0 || key.SegmentId >= netManager.m_segments.m_size)
-                    continue;
-
-                ref NetSegment segment = ref netManager.m_segments.m_buffer[key.SegmentId];
-                if ((segment.m_flags & NetSegment.Flags.Created) == 0)
-                    continue;
-
-                Vector3 crossingPosition;
-                if (TryCalculateSegmentEndCrossingPosition(key.SegmentId, ref segment, key.StartNode, out crossingPosition)
-                    && HorizontalPointSegmentDistanceSqr(crossingPosition, geometry.FirstDeckPosition, geometry.SecondDeckPosition) <= SuppressionDistance * SuppressionDistance)
+                if (!asset.Plan.IsValid
+                    || !GradeSeparatedPlacementGeometryResolver.IsGradeSeparated(asset.Plan.ApplicationKind)
+                    || !RoadPlacementRules.IsRoadGradeSeparatedPlacementTarget(asset.Placement.SegmentId)
+                    || SuppressedEndSnapshots.Count == 0)
                 {
-                    return true;
+                    return false;
                 }
-            }
 
-            return false;
+                GradeSeparatedPlacementGeometry geometry;
+                if (!GradeSeparatedPlacementGeometryResolver.TryBuild(asset, out geometry, false))
+                    return false;
+
+                NetManager netManager = NetManager.instance;
+                if (netManager == null)
+                    return false;
+
+                foreach (KeyValuePair<SegmentEndKey, SuppressedEndSnapshot> snapshot in SuppressedEndSnapshots)
+                {
+                    SegmentEndKey key = snapshot.Key;
+                    if (key.SegmentId == 0 || key.SegmentId >= netManager.m_segments.m_size)
+                        continue;
+
+                    ref NetSegment segment = ref netManager.m_segments.m_buffer[key.SegmentId];
+                    if (!snapshot.Value.Matches(ref segment))
+                        continue;
+
+                    Vector3 crossingPosition;
+                    if (TryCalculateSegmentEndCrossingPosition(key.SegmentId, ref segment, key.StartNode, out crossingPosition)
+                        && HorizontalPointSegmentDistanceSqr(crossingPosition, geometry.FirstDeckPosition, geometry.SecondDeckPosition) <= SuppressionDistance * SuppressionDistance)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+
+        internal static bool HasUnsuppressedTargetForAsset(CrossingPlacementAsset asset)
+        {
+            lock (PermissionGate)
+            {
+                GradeSeparatedPlacementGeometry geometry;
+                if (!GradeSeparatedPlacementGeometryResolver.TryBuild(asset, out geometry, false))
+                    return true;
+                NetManager manager = NetManager.instance;
+                if (manager == null) return true;
+                foreach (SegmentEndKey key in TargetSegmentEnds)
+                {
+                    if (key.SegmentId == 0 || key.SegmentId >= manager.m_segments.m_buffer.Length) continue;
+                    ref NetSegment segment = ref manager.m_segments.m_buffer[key.SegmentId];
+                    if ((segment.m_flags & NetSegment.Flags.Created) == 0) continue;
+                    Vector3 point;
+                    if (TryCalculateSegmentEndCrossingPosition(key.SegmentId, ref segment, key.StartNode, out point)
+                        && HorizontalPointSegmentDistanceSqr(point, geometry.FirstDeckPosition, geometry.SecondDeckPosition) <= SuppressionDistance * SuppressionDistance
+                        && IsCrossingAllowed(ref segment, key.StartNode))
+                        return true;
+                }
+                return false;
+            }
         }
 
         private static int BuildSuppressionSpans(out int assetCount)
@@ -334,18 +390,23 @@ namespace PedestrianCrossingToolkit
                 if (!SuppressedEndSnapshots.TryGetValue(key, out snapshot))
                     continue;
 
-                if (snapshot.TrafficManagerBanApplied
-                    && TrafficManagerPedestrianCrossingIntegration.SetPedestrianCrossingAllowed(
-                        key.SegmentId,
-                        key.StartNode,
-                        GetTrafficManagerRestoreAllowed(snapshot)))
+                if (key.SegmentId == 0 || key.SegmentId >= netManager.m_segments.m_buffer.Length
+                    || !snapshot.Matches(ref netManager.m_segments.m_buffer[key.SegmentId]))
                 {
-                    tmpeRestores++;
+                    SuppressedEndSnapshots.Remove(key);
+                    continue;
                 }
+
+                bool tmpeRestored = !snapshot.TrafficManagerBanApplied
+                    || TrafficManagerPedestrianCrossingIntegration.SetPedestrianCrossingAllowed(
+                        key.SegmentId, key.StartNode, GetTrafficManagerRestoreAllowed(snapshot));
+                if (snapshot.TrafficManagerBanApplied && tmpeRestored)
+                    tmpeRestores++;
 
                 if (snapshot.OriginalCrossingAllowed && SetCrossingFlag(netManager, key, true))
                     restored++;
-
+                if (!tmpeRestored)
+                    continue;
                 SuppressedEndSnapshots.Remove(key);
             }
 
@@ -369,7 +430,7 @@ namespace PedestrianCrossingToolkit
                 bool currentlyAllowed = IsCrossingAllowed(ref segment, key.StartNode);
                 SuppressedEndSnapshot snapshot;
                 bool alreadyTracked = SuppressedEndSnapshots.TryGetValue(key, out snapshot);
-                if (!alreadyTracked)
+                if (!alreadyTracked || !snapshot.Matches(ref segment))
                 {
                     bool originalTrafficManagerAllowed;
                     bool hasOriginalTrafficManagerAllowed =
@@ -378,6 +439,7 @@ namespace PedestrianCrossingToolkit
                             key.StartNode,
                             out originalTrafficManagerAllowed);
                     snapshot = new SuppressedEndSnapshot(
+                        ref segment,
                         currentlyAllowed,
                         hasOriginalTrafficManagerAllowed,
                         originalTrafficManagerAllowed);

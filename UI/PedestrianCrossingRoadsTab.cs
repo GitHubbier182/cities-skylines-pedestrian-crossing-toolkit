@@ -6,7 +6,6 @@ namespace PedestrianCrossingToolkit
 {
     internal class PedestrianCrossingRoadsTab : MonoBehaviour
     {
-        private const string ComponentName = "PedestrianCrossingToolkitRoadsTab";
         private const string TabName = "PedestrianCrossingToolkitCrossingsTab";
         private const string PageName = "PedestrianCrossingToolkitCrossingsPage";
         private const string TabIconName = "PedestrianCrossingToolkitCrossingsTabIcon";
@@ -50,7 +49,6 @@ namespace PedestrianCrossingToolkit
                 return;
 
             Instance = view.gameObject.AddComponent<PedestrianCrossingRoadsTab>();
-            Instance.name = ComponentName;
         }
 
         public static void DestroyInstance()
@@ -121,7 +119,7 @@ namespace PedestrianCrossingToolkit
                     || _crossingsPage == null
                     || _crossingsPanel == null)
                 {
-                    ClearInstalledReferences();
+                    RemoveInstalledUi();
                 }
                 else
                 {
@@ -321,8 +319,7 @@ namespace PedestrianCrossingToolkit
             if (_tabstrip == null || _crossingsTab == null || _crossingsPage == null)
                 return;
 
-            if (_tabIndex < 0)
-                _tabIndex = FindTabIndex(_tabstrip, _crossingsTab);
+            _tabIndex = FindTabIndex(_tabstrip, _crossingsTab);
 
             bool selected = IsSelected(_crossingsTab, _tabstrip, _tabIndex);
             bool visibilityChanged = _crossingsPage.isVisible != selected;
@@ -348,6 +345,7 @@ namespace PedestrianCrossingToolkit
                 return false;
             }
 
+            _roadsPageIndex = FindPageIndex(_rootTabstrip == null ? null : _rootTabstrip.tabPages, _roadsPage);
             return _rootTabstrip != null
                    && _roadsPageIndex >= 0
                    && _rootTabstrip.selectedIndex == _roadsPageIndex;

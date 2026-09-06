@@ -33,6 +33,9 @@ namespace PedestrianCrossingToolkit
             public readonly ushort SegmentId;
             public readonly bool StartNode;
             public readonly object Lights;
+            public readonly uint SegmentBuildIndex;
+            public readonly uint NodeBuildIndex;
+            public readonly string PrefabName;
 
             public SignalLightSnapshot(ushort nodeId, ushort segmentId, bool startNode, object lights)
             {
@@ -40,7 +43,33 @@ namespace PedestrianCrossingToolkit
                 SegmentId = segmentId;
                 StartNode = startNode;
                 Lights = lights;
+                NetManager manager = NetManager.instance;
+                SegmentBuildIndex = manager.m_segments.m_buffer[segmentId].m_buildIndex;
+                NodeBuildIndex = manager.m_nodes.m_buffer[nodeId].m_buildIndex;
+                PrefabName = manager.m_segments.m_buffer[segmentId].Info.name;
             }
+        }
+
+        private static bool IsLiveSignalEnd(ushort nodeId, ushort segmentId, bool startNode)
+        {
+            NetManager manager = NetManager.instance;
+            if (manager == null || nodeId == 0 || segmentId == 0
+                || nodeId >= manager.m_nodes.m_buffer.Length || segmentId >= manager.m_segments.m_buffer.Length)
+                return false;
+            ref NetSegment segment = ref manager.m_segments.m_buffer[segmentId];
+            return (segment.m_flags & NetSegment.Flags.Created) != 0 && segment.Info != null
+                && (manager.m_nodes.m_buffer[nodeId].m_flags & NetNode.Flags.Created) != 0
+                && (startNode ? segment.m_startNode : segment.m_endNode) == nodeId;
+        }
+
+        private static bool MatchesSignalSnapshot(SignalLightSnapshot snapshot)
+        {
+            if (!IsLiveSignalEnd(snapshot.NodeId, snapshot.SegmentId, snapshot.StartNode))
+                return false;
+            NetManager manager = NetManager.instance;
+            ref NetSegment segment = ref manager.m_segments.m_buffer[snapshot.SegmentId];
+            return segment.m_buildIndex == snapshot.SegmentBuildIndex && segment.Info.name == snapshot.PrefabName
+                && manager.m_nodes.m_buffer[snapshot.NodeId].m_buildIndex == snapshot.NodeBuildIndex;
         }
 
         public static bool IsAvailable
@@ -179,12 +208,16 @@ namespace PedestrianCrossingToolkit
                 return false;
 
             EnsureResolved();
-            if (!_trafficLightInteropAvailable || _customSegmentLightsManager == null || _getSegmentLightsByEnd == null || _setLights == null)
+            if (!_trafficLightInteropAvailable || _customSegmentLightsManager == null || _getSegmentLightsByEnd == null || _setLights == null
+                || !IsLiveSignalEnd(nodeId, segmentId, startNode))
                 return false;
 
             try
             {
                 long key = MakeSignalLightKey(segmentId, startNode);
+                SignalLightSnapshot prior;
+                if (SignalLightSnapshots.TryGetValue(key, out prior) && !MatchesSignalSnapshot(prior))
+                    SignalLightSnapshots.Remove(key);
                 if (!SignalLightSnapshots.ContainsKey(key))
                 {
                     object existing = _getSegmentLightsByNode == null
@@ -193,6 +226,8 @@ namespace PedestrianCrossingToolkit
                     object snapshot = existing != null && _cloneSegmentLights != null
                         ? _cloneSegmentLights.Invoke(existing, new object[] { _customSegmentLightsManager, false })
                         : null;
+                    if (existing != null && snapshot == null)
+                        return false;
                     SignalLightSnapshots.Add(key, new SignalLightSnapshot(nodeId, segmentId, startNode, snapshot));
                 }
 
@@ -242,13 +277,20 @@ namespace PedestrianCrossingToolkit
             SignalLightSnapshot snapshot;
             if (!SignalLightSnapshots.TryGetValue(key, out snapshot))
                 return false;
+            if (!MatchesSignalSnapshot(snapshot))
+            {
+                SignalLightSnapshots.Remove(key);
+                return true; // The old owner is gone; leave its replacement untouched.
+            }
 
             try
             {
                 if (snapshot.Lights != null && _setSegmentLights != null)
                 {
                     ushort restoreNodeId = snapshot.NodeId != 0 ? snapshot.NodeId : nodeId;
-                    _setSegmentLights.Invoke(_customSegmentLightsManager, new object[] { restoreNodeId, snapshot.SegmentId, snapshot.Lights });
+                    object accepted = _setSegmentLights.Invoke(_customSegmentLightsManager, new object[] { restoreNodeId, snapshot.SegmentId, snapshot.Lights });
+                    if (accepted is bool && !(bool)accepted)
+                        return false;
                     if (_updateVisuals != null)
                         _updateVisuals.Invoke(snapshot.Lights, null);
                 }
@@ -257,6 +299,7 @@ namespace PedestrianCrossingToolkit
                     _removeSegmentLight.Invoke(_customSegmentLightsManager, new object[] { snapshot.SegmentId, snapshot.StartNode });
                 }
 
+                SignalLightSnapshots.Remove(key);
                 return true;
             }
             catch (Exception e)
@@ -273,16 +316,13 @@ namespace PedestrianCrossingToolkit
                                  + e.Message);
                 return false;
             }
-            finally
-            {
-                SignalLightSnapshots.Remove(key);
-            }
         }
 
         public static bool ClearManagedSignalLightState(ushort nodeId, ushort segmentId, bool startNode)
         {
-            if (RestoreSignalLightState(nodeId, segmentId, startNode))
-                return true;
+            // A failed restoration must retain the original snapshot and lights.
+            if (SignalLightSnapshots.ContainsKey(MakeSignalLightKey(segmentId, startNode)))
+                return RestoreSignalLightState(nodeId, segmentId, startNode);
 
             EnsureResolved();
             if (!_trafficLightInteropAvailable || _customSegmentLightsManager == null || _removeSegmentLight == null)
@@ -418,7 +458,10 @@ namespace PedestrianCrossingToolkit
                     _pedestrianLightState = segmentLightsType.GetProperty("PedestrianLightState", BindingFlags.Public | BindingFlags.Instance);
                 }
 
-                _trafficLightInteropAvailable = _getSegmentLightsByEnd != null && _setLights != null;
+                _trafficLightInteropAvailable = _getSegmentLightsByEnd != null && _getSegmentLightsByNode != null
+                    && _setLights != null && _cloneSegmentLights != null && _setSegmentLights != null
+                    && _removeSegmentLight != null && _manualPedestrianMode != null && _manualPedestrianMode.CanWrite
+                    && _pedestrianLightState != null && _pedestrianLightState.CanWrite && _updateVisuals != null;
                 if (_trafficLightInteropAvailable)
                     PedestrianCrossingLog.UnityInfo("TM:PE signal light API detected; signal crossings will mirror phase state into TM:PE lights.");
             }

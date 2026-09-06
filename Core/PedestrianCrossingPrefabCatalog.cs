@@ -186,6 +186,9 @@ namespace PedestrianCrossingToolkit
 
         private static PedestrianPathPrefabKind Classify(NetInfo info)
         {
+            if (info == null || info.m_netAI == null)
+                return PedestrianPathPrefabKind.None;
+
             if (info.m_netAI is PedestrianBridgeAI)
                 return PedestrianPathPrefabKind.Bridge;
 

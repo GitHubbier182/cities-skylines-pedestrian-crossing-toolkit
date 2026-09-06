@@ -750,7 +750,8 @@ namespace PedestrianCrossingToolkit
             mesh.RecalculateBounds();
 
             MeshFilter filter = obj.AddComponent<MeshFilter>();
-            filter.mesh = mesh;
+            filter.sharedMesh = mesh;
+            obj.AddComponent<SourceVisualMeshOwner>().OwnedMesh = mesh;
             MeshRenderer renderer = obj.AddComponent<MeshRenderer>();
             renderer.material = material ?? GetBridgeConcreteMaterial();
             renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
@@ -800,7 +801,8 @@ namespace PedestrianCrossingToolkit
             mesh.RecalculateBounds();
 
             MeshFilter filter = obj.AddComponent<MeshFilter>();
-            filter.mesh = mesh;
+            filter.sharedMesh = mesh;
+            obj.AddComponent<SourceVisualMeshOwner>().OwnedMesh = mesh;
             MeshRenderer renderer = obj.AddComponent<MeshRenderer>();
             renderer.material = material ?? GetBridgeConcreteMaterial();
             renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;

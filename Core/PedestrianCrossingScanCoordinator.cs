@@ -202,7 +202,12 @@ namespace PedestrianCrossingToolkit
 
         public static void Shutdown()
         {
-            if (_available)
+            // A later submission can fail after earlier requests were accepted.
+            // Always cancel the owner before releasing their captured city state.
+            if (_available || !string.IsNullOrEmpty(_autoScanTicket)
+                || !string.IsNullOrEmpty(_autoScanBuildTicket)
+                || !string.IsNullOrEmpty(_loadRebuildTicket)
+                || !string.IsNullOrEmpty(_validationTicket))
             {
                 try
                 {

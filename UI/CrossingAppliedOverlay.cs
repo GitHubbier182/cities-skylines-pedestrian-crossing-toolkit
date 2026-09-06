@@ -15,11 +15,35 @@ namespace PedestrianCrossingToolkit
         private static CrossingPlacementAsset[] ValidationProblemRenderBuffer = new CrossingPlacementAsset[512];
         private static readonly CrossingPlacementRecord[] AutoScanPreviewRenderBuffer = new CrossingPlacementRecord[CrossingAutoScanPlanner.MaxPlannedPlacements];
         private static readonly int[] AutoScanPreviewIndexRenderBuffer = new int[CrossingAutoScanPlanner.MaxPlannedPlacements];
-        private static readonly List<string> ConnectorRenderKeys = new List<string>();
-        private static readonly List<string> ConnectivityRenderKeys = new List<string>();
+        private static readonly HashSet<string> ConnectorRenderKeys = new HashSet<string>();
+        private static readonly HashSet<string> ConnectivityRenderKeys = new HashSet<string>();
         private static readonly List<Rect> CrossingSummaryBlockingRects = new List<Rect>();
         private static readonly List<GameObject> RouteWorldVisuals = new List<GameObject>();
         private static readonly List<GameObject> CrossingHighlightWorldVisuals = new List<GameObject>();
+        private sealed class HighlightGeometryBuffer
+        {
+            internal readonly List<Vector3> Vertices = new List<Vector3>();
+            internal readonly List<Vector2> Uvs = new List<Vector2>();
+            internal readonly List<int> Triangles = new List<int>();
+            internal void Clear()
+            {
+                Vertices.Clear();
+                Uvs.Clear();
+                Triangles.Clear();
+            }
+        }
+        private readonly HighlightGeometryBuffer[] _highlightGeometry = CreateHighlightGeometry();
+        private readonly HighlightGeometryBuffer _highlightUpload = new HighlightGeometryBuffer();
+        private const int MaxHighlightMeshVertices = 60000;
+
+        private static HighlightGeometryBuffer[] CreateHighlightGeometry()
+        {
+            HighlightGeometryBuffer[] buffers = new HighlightGeometryBuffer[11];
+            for (int i = 0; i < buffers.Length; i++)
+                buffers[i] = new HighlightGeometryBuffer();
+            return buffers;
+        }
+
         private static readonly Color SubwayRoutePreviewColor = new Color(0.48f, 0.88f, 1f, 0.76f);
         private static readonly Color SubwayRouteMutedColor = new Color(0.48f, 0.88f, 1f, 0.08f);
         private static readonly Color SubwayRouteWorldColor = new Color(0.48f, 0.88f, 1f, 0.52f);
@@ -95,6 +119,8 @@ namespace PedestrianCrossingToolkit
         private bool _hasWorldVisualCameraSnapshot;
         private bool _worldVisualCachedCrossingTabOpen;
         private int _routeWorldVisualActiveCount;
+        private bool _routeWorldVisualsReady;
+        private int _routePlannerRevision = -1;
         private int _crossingHighlightWorldVisualActiveCount;
         private bool _crossingSummaryUiCacheReady;
         private float _nextCrossingSummaryUiRefreshTime;
@@ -132,6 +158,19 @@ namespace PedestrianCrossingToolkit
             Instance.ClearCrossingHighlightWorldVisuals(true);
             Instance.DestroyCrossingSummaryPanels();
             UnityEngine.Object.Destroy(Instance);
+            Instance = null;
+        }
+
+        private void OnDestroy()
+        {
+            // World meshes are not children of UIView. Unexpected UI destruction
+            // must release them too, without clearing a newer overlay instance.
+            if (Instance != this)
+                return;
+            ClearCrossingSelection();
+            ClearRouteWorldVisuals(true);
+            ClearCrossingHighlightWorldVisuals(true);
+            DestroyCrossingSummaryPanels();
             Instance = null;
         }
 
@@ -222,7 +261,8 @@ namespace PedestrianCrossingToolkit
             CrossingPlacementRecord currentPreview = PedestrianCrossingToolkitState.LastPreview;
             if (ShouldShowRouteWorldVisuals())
             {
-                if (cameraChanged
+                if (!_routeWorldVisualsReady
+                    || _routePlannerRevision != CrossingLandingConnectorPlanner.Revision
                     || activeMode != _worldVisualCachedMode
                     || crossingTabOpen != _worldVisualCachedCrossingTabOpen
                     || registryRevision != _highlightCachedRegistryRevision
@@ -953,42 +993,46 @@ namespace PedestrianCrossingToolkit
 
         private void RebuildCrossingHighlightWorldVisuals(Camera camera, bool includeCrossingHighlights, bool includeValidationProblems, bool includeAutoScanPreview)
         {
-            ClearCrossingHighlightWorldVisuals();
+            // Reuse live renderers and mesh/list storage during camera changes.
+            // Hide only batches which the new result no longer uses.
+            _crossingHighlightWorldVisualActiveCount = 0;
+            for (int i = 0; i < _highlightGeometry.Length; i++)
+                _highlightGeometry[i].Clear();
 
             PedestrianToolMode activeMode = PedestrianCrossingToolkitState.ActiveMode;
-            List<Vector3> midBlockVertices = new List<Vector3>();
-            List<Vector2> midBlockUvs = new List<Vector2>();
-            List<int> midBlockTriangles = new List<int>();
-            List<Vector3> signalVertices = new List<Vector3>();
-            List<Vector2> signalUvs = new List<Vector2>();
-            List<int> signalTriangles = new List<int>();
-            List<Vector3> subwayLinkVertices = new List<Vector3>();
-            List<Vector2> subwayLinkUvs = new List<Vector2>();
-            List<int> subwayLinkTriangles = new List<int>();
-            List<Vector3> subwayPointVertices = new List<Vector3>();
-            List<Vector2> subwayPointUvs = new List<Vector2>();
-            List<int> subwayPointTriangles = new List<int>();
-            List<Vector3> bridgeVertices = new List<Vector3>();
-            List<Vector2> bridgeUvs = new List<Vector2>();
-            List<int> bridgeTriangles = new List<int>();
-            List<Vector3> validationProblemVertices = new List<Vector3>();
-            List<Vector2> validationProblemUvs = new List<Vector2>();
-            List<int> validationProblemTriangles = new List<int>();
-            List<Vector3> previewMidBlockVertices = new List<Vector3>();
-            List<Vector2> previewMidBlockUvs = new List<Vector2>();
-            List<int> previewMidBlockTriangles = new List<int>();
-            List<Vector3> previewSignalVertices = new List<Vector3>();
-            List<Vector2> previewSignalUvs = new List<Vector2>();
-            List<int> previewSignalTriangles = new List<int>();
-            List<Vector3> previewSubwayLinkVertices = new List<Vector3>();
-            List<Vector2> previewSubwayLinkUvs = new List<Vector2>();
-            List<int> previewSubwayLinkTriangles = new List<int>();
-            List<Vector3> previewSubwayPointVertices = new List<Vector3>();
-            List<Vector2> previewSubwayPointUvs = new List<Vector2>();
-            List<int> previewSubwayPointTriangles = new List<int>();
-            List<Vector3> previewBridgeVertices = new List<Vector3>();
-            List<Vector2> previewBridgeUvs = new List<Vector2>();
-            List<int> previewBridgeTriangles = new List<int>();
+            List<Vector3> midBlockVertices = _highlightGeometry[0].Vertices;
+            List<Vector2> midBlockUvs = _highlightGeometry[0].Uvs;
+            List<int> midBlockTriangles = _highlightGeometry[0].Triangles;
+            List<Vector3> signalVertices = _highlightGeometry[1].Vertices;
+            List<Vector2> signalUvs = _highlightGeometry[1].Uvs;
+            List<int> signalTriangles = _highlightGeometry[1].Triangles;
+            List<Vector3> subwayLinkVertices = _highlightGeometry[2].Vertices;
+            List<Vector2> subwayLinkUvs = _highlightGeometry[2].Uvs;
+            List<int> subwayLinkTriangles = _highlightGeometry[2].Triangles;
+            List<Vector3> subwayPointVertices = _highlightGeometry[3].Vertices;
+            List<Vector2> subwayPointUvs = _highlightGeometry[3].Uvs;
+            List<int> subwayPointTriangles = _highlightGeometry[3].Triangles;
+            List<Vector3> bridgeVertices = _highlightGeometry[4].Vertices;
+            List<Vector2> bridgeUvs = _highlightGeometry[4].Uvs;
+            List<int> bridgeTriangles = _highlightGeometry[4].Triangles;
+            List<Vector3> validationProblemVertices = _highlightGeometry[5].Vertices;
+            List<Vector2> validationProblemUvs = _highlightGeometry[5].Uvs;
+            List<int> validationProblemTriangles = _highlightGeometry[5].Triangles;
+            List<Vector3> previewMidBlockVertices = _highlightGeometry[6].Vertices;
+            List<Vector2> previewMidBlockUvs = _highlightGeometry[6].Uvs;
+            List<int> previewMidBlockTriangles = _highlightGeometry[6].Triangles;
+            List<Vector3> previewSignalVertices = _highlightGeometry[7].Vertices;
+            List<Vector2> previewSignalUvs = _highlightGeometry[7].Uvs;
+            List<int> previewSignalTriangles = _highlightGeometry[7].Triangles;
+            List<Vector3> previewSubwayLinkVertices = _highlightGeometry[8].Vertices;
+            List<Vector2> previewSubwayLinkUvs = _highlightGeometry[8].Uvs;
+            List<int> previewSubwayLinkTriangles = _highlightGeometry[8].Triangles;
+            List<Vector3> previewSubwayPointVertices = _highlightGeometry[9].Vertices;
+            List<Vector2> previewSubwayPointUvs = _highlightGeometry[9].Uvs;
+            List<int> previewSubwayPointTriangles = _highlightGeometry[9].Triangles;
+            List<Vector3> previewBridgeVertices = _highlightGeometry[10].Vertices;
+            List<Vector2> previewBridgeUvs = _highlightGeometry[10].Uvs;
+            List<int> previewBridgeTriangles = _highlightGeometry[10].Triangles;
 
             if (includeCrossingHighlights)
             {
@@ -1099,6 +1143,12 @@ namespace PedestrianCrossingToolkit
             }
 
             AddValidationProblemWorldVisual(validationProblemVertices, validationProblemUvs, validationProblemTriangles);
+            for (int i = _crossingHighlightWorldVisualActiveCount; i < CrossingHighlightWorldVisuals.Count; i++)
+            {
+                GameObject unused = CrossingHighlightWorldVisuals[i];
+                if (unused != null && unused.activeSelf)
+                    unused.SetActive(false);
+            }
             _validationProblemCachedRevision = PedestrianCrossingToolkitState.ValidationProblemRevision;
             _autoScanPreviewCachedRevision = PedestrianCrossingToolkitState.AutoScanPreviewRevision;
         }
@@ -1317,50 +1367,62 @@ namespace PedestrianCrossingToolkit
 
         private void AddCrossingHighlightWorldVisual(PedestrianToolMode mode, List<Vector3> vertices, List<Vector2> uvs, List<int> triangles)
         {
-            if (vertices == null || uvs == null || triangles == null || vertices.Count == 0 || uvs.Count != vertices.Count || triangles.Count == 0)
-                return;
-
-            GameObject visual = GetCrossingHighlightWorldVisual(
-                "PCT Crossing Highlight " + mode,
-                GetCrossingHighlightWorldMaterial(mode));
-            Mesh mesh = visual.GetComponent<MeshFilter>().sharedMesh;
-            mesh.Clear();
-            mesh.vertices = vertices.ToArray();
-            mesh.uv = uvs.ToArray();
-            mesh.triangles = triangles.ToArray();
-            mesh.RecalculateBounds();
+            UploadHighlightGeometry("PCT Crossing Highlight " + mode,
+                GetCrossingHighlightWorldMaterial(mode), vertices, uvs, triangles);
         }
 
         private void AddAutoScanPreviewWorldVisual(PedestrianToolMode mode, List<Vector3> vertices, List<Vector2> uvs, List<int> triangles)
         {
-            if (vertices == null || uvs == null || triangles == null || vertices.Count == 0 || uvs.Count != vertices.Count || triangles.Count == 0)
-                return;
-
-            GameObject visual = GetCrossingHighlightWorldVisual(
-                "PCT Auto Scan Preview " + mode,
-                GetAutoScanPreviewWorldMaterial(mode));
-            Mesh mesh = visual.GetComponent<MeshFilter>().sharedMesh;
-            mesh.Clear();
-            mesh.vertices = vertices.ToArray();
-            mesh.uv = uvs.ToArray();
-            mesh.triangles = triangles.ToArray();
-            mesh.RecalculateBounds();
+            UploadHighlightGeometry("PCT Auto Scan Preview " + mode,
+                GetAutoScanPreviewWorldMaterial(mode), vertices, uvs, triangles);
         }
 
         private void AddValidationProblemWorldVisual(List<Vector3> vertices, List<Vector2> uvs, List<int> triangles)
         {
-            if (vertices == null || uvs == null || triangles == null || vertices.Count == 0 || uvs.Count != vertices.Count || triangles.Count == 0)
+            UploadHighlightGeometry("PCT Validation Problem Highlight",
+                GetValidationProblemWorldMaterial(), vertices, uvs, triangles);
+        }
+
+        private void UploadHighlightGeometry(string name, Material material,
+            List<Vector3> vertices, List<Vector2> uvs, List<int> triangles)
+        {
+            if (vertices == null || uvs == null || triangles == null || vertices.Count == 0
+                || uvs.Count != vertices.Count || triangles.Count == 0)
                 return;
 
-            GameObject visual = GetCrossingHighlightWorldVisual(
-                "PCT Validation Problem Highlight",
-                GetValidationProblemWorldMaterial());
-            Mesh mesh = visual.GetComponent<MeshFilter>().sharedMesh;
-            mesh.Clear();
-            mesh.vertices = vertices.ToArray();
-            mesh.uv = uvs.ToArray();
-            mesh.triangles = triangles.ToArray();
-            mesh.RecalculateBounds();
+            // All three marker families consist of independent four-vertex,
+            // six-index billboards. Split at complete icons for Unity's 16-bit meshes.
+            for (int start = 0; start < vertices.Count; start += MaxHighlightMeshVertices)
+            {
+                int count = Mathf.Min(MaxHighlightMeshVertices, vertices.Count - start);
+                List<Vector3> uploadVertices = vertices;
+                List<Vector2> uploadUvs = uvs;
+                List<int> uploadTriangles = triangles;
+                if (vertices.Count > MaxHighlightMeshVertices)
+                {
+                    _highlightUpload.Clear();
+                    for (int i = start; i < start + count; i++)
+                    {
+                        _highlightUpload.Vertices.Add(vertices[i]);
+                        _highlightUpload.Uvs.Add(uvs[i]);
+                    }
+                    int firstIndex = start / 4 * 6;
+                    int lastIndex = firstIndex + count / 4 * 6;
+                    for (int i = firstIndex; i < lastIndex; i++)
+                        _highlightUpload.Triangles.Add(triangles[i] - start);
+                    uploadVertices = _highlightUpload.Vertices;
+                    uploadUvs = _highlightUpload.Uvs;
+                    uploadTriangles = _highlightUpload.Triangles;
+                }
+
+                GameObject visual = GetCrossingHighlightWorldVisual(name, material);
+                Mesh mesh = visual.GetComponent<MeshFilter>().sharedMesh;
+                mesh.Clear();
+                mesh.SetVertices(uploadVertices);
+                mesh.SetUVs(0, uploadUvs);
+                mesh.SetTriangles(uploadTriangles, 0);
+                mesh.RecalculateBounds();
+            }
         }
 
         private GameObject GetCrossingHighlightWorldVisual(string name, Material material)
@@ -1369,7 +1431,8 @@ namespace PedestrianCrossingToolkit
             if (_crossingHighlightWorldVisualActiveCount < CrossingHighlightWorldVisuals.Count)
             {
                 visual = CrossingHighlightWorldVisuals[_crossingHighlightWorldVisualActiveCount];
-                visual.SetActive(true);
+                if (!visual.activeSelf)
+                    visual.SetActive(true);
             }
             else
             {
@@ -1392,7 +1455,7 @@ namespace PedestrianCrossingToolkit
 
         private void RebuildRouteWorldVisuals()
         {
-            ClearRouteWorldVisuals();
+            _routeWorldVisualActiveCount = 0;
             int linkCount = CrossingConnectivityPlanner.CopyLinksTo(LinkRenderBuffer);
             ConnectivityRenderKeys.Clear();
             for (int i = 0; i < linkCount; i++)
@@ -1447,6 +1510,11 @@ namespace PedestrianCrossingToolkit
 
                 AddRouteWorldVisual(order.DeckPosition, order.Position, RouteWorldVisualWidth);
             }
+            for (int i = _routeWorldVisualActiveCount; i < RouteWorldVisuals.Count; i++)
+                if (RouteWorldVisuals[i] != null && RouteWorldVisuals[i].activeSelf)
+                    RouteWorldVisuals[i].SetActive(false);
+            _routeWorldVisualsReady = true;
+            _routePlannerRevision = CrossingLandingConnectorPlanner.Revision;
         }
 
         private void AddRouteWorldVisual(Vector3 start, Vector3 end, float width)
@@ -1463,7 +1531,7 @@ namespace PedestrianCrossingToolkit
             if (_routeWorldVisualActiveCount < RouteWorldVisuals.Count)
             {
                 visual = RouteWorldVisuals[_routeWorldVisualActiveCount];
-                visual.SetActive(true);
+                if (!visual.activeSelf) visual.SetActive(true);
             }
             else
             {
@@ -1486,7 +1554,8 @@ namespace PedestrianCrossingToolkit
 
         private void ClearRouteWorldVisuals(bool destroy = false)
         {
-            for (int i = RouteWorldVisuals.Count - 1; i >= 0; i--)
+            int count = destroy ? RouteWorldVisuals.Count : _routeWorldVisualActiveCount;
+            for (int i = count - 1; i >= 0; i--)
             {
                 GameObject visual = RouteWorldVisuals[i];
                 if (visual != null)
@@ -1499,13 +1568,15 @@ namespace PedestrianCrossingToolkit
             }
 
             _routeWorldVisualActiveCount = 0;
+            _routeWorldVisualsReady = false;
             if (destroy)
                 RouteWorldVisuals.Clear();
         }
 
         private void ClearCrossingHighlightWorldVisuals(bool destroy = false)
         {
-            for (int i = CrossingHighlightWorldVisuals.Count - 1; i >= 0; i--)
+            int count = destroy ? CrossingHighlightWorldVisuals.Count : _crossingHighlightWorldVisualActiveCount;
+            for (int i = count - 1; i >= 0; i--)
             {
                 GameObject visual = CrossingHighlightWorldVisuals[i];
                 if (visual != null)

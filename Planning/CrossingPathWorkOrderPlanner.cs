@@ -208,13 +208,22 @@ namespace PedestrianCrossingToolkit
             }
 
             int entranceCount = CopyUniqueSubwayEntrances();
+            CrossingPointIndex entranceIndex = new CrossingPointIndex(SubwayEntranceAutoLinkRadius);
+            for (int i = 0; i < entranceCount; i++)
+                entranceIndex.Add(SubwayEntranceBuffer[i].Position, i);
+            List<int> neighbours = new List<int>();
             int added = 0;
             float minDistanceSqr = SubwayEntranceAutoLinkMinDistance * SubwayEntranceAutoLinkMinDistance;
             float radiusSqr = SubwayEntranceAutoLinkRadius * SubwayEntranceAutoLinkRadius;
             for (int i = 0; i < entranceCount; i++)
             {
-                for (int j = i + 1; j < entranceCount; j++)
+                neighbours.Clear();
+                entranceIndex.AppendNearby(SubwayEntranceBuffer[i].Position, SubwayEntranceAutoLinkRadius, neighbours);
+                neighbours.Sort(); // Preserve the original stable pair order.
+                for (int n = 0; n < neighbours.Count; n++)
                 {
+                    int j = neighbours[n];
+                    if (j <= i) continue;
                     CrossingLandingAccessAssetWorkOrder first = SubwayEntranceBuffer[i];
                     CrossingLandingAccessAssetWorkOrder second = SubwayEntranceBuffer[j];
                     float distanceSqr = HorizontalDistanceSqr(first.Position, second.Position);
@@ -262,6 +271,9 @@ namespace PedestrianCrossingToolkit
             ManagerCapacity.EnsureArrayCapacity(ref SubwayEntranceBuffer, CrossingLandingConnectorPlanner.AccessAssetCount);
             int sourceCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(SubwayEntranceBuffer);
             int entranceCount = 0;
+            CrossingPointIndex surfaceIndex = new CrossingPointIndex(SubwayEntranceAutoLinkMinDistance);
+            CrossingPointIndex deckIndex = new CrossingPointIndex(SubwayEntranceAutoLinkMinDistance);
+            List<int> neighbours = new List<int>();
             int max = Mathf.Min(sourceCount, SubwayEntranceBuffer.Length);
             for (int i = 0; i < max; i++)
             {
@@ -272,21 +284,26 @@ namespace PedestrianCrossingToolkit
                     continue;
                 }
 
-                if (HasMatchingSubwayEntrance(order, entranceCount))
+                neighbours.Clear();
+                surfaceIndex.AppendNearby(order.Position, SubwayEntranceAutoLinkMinDistance, neighbours);
+                deckIndex.AppendNearby(order.DeckPosition, SubwayEntranceAutoLinkMinDistance, neighbours);
+                if (HasMatchingSubwayEntrance(order, neighbours))
                     continue;
 
+                surfaceIndex.Add(order.Position, entranceCount);
+                deckIndex.Add(order.DeckPosition, entranceCount);
                 SubwayEntranceBuffer[entranceCount++] = order;
             }
 
             return entranceCount;
         }
 
-        private static bool HasMatchingSubwayEntrance(CrossingLandingAccessAssetWorkOrder candidate, int entranceCount)
+        private static bool HasMatchingSubwayEntrance(CrossingLandingAccessAssetWorkOrder candidate, List<int> neighbours)
         {
             float minDistanceSqr = SubwayEntranceAutoLinkMinDistance * SubwayEntranceAutoLinkMinDistance;
-            for (int i = 0; i < entranceCount; i++)
+            for (int i = 0; i < neighbours.Count; i++)
             {
-                CrossingLandingAccessAssetWorkOrder existing = SubwayEntranceBuffer[i];
+                CrossingLandingAccessAssetWorkOrder existing = SubwayEntranceBuffer[neighbours[i]];
                 if (HorizontalDistanceSqr(existing.Position, candidate.Position) <= minDistanceSqr
                     || HorizontalDistanceSqr(existing.DeckPosition, candidate.DeckPosition) <= minDistanceSqr)
                 {

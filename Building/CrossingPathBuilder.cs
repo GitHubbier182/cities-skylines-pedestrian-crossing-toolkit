@@ -595,7 +595,7 @@ namespace PedestrianCrossingToolkit
         private const float SignalPedestrianGreenSeconds = 5f;
         private const float SignalPedestrianClearanceAssumedWalkSpeed = 2.5f;
         private const float SignalPedestrianClearanceStartupBufferSeconds = 1.5f;
-        private const float SignalPedestrianClearanceHardMaxSeconds = 18f;
+        private const float SignalPedestrianProtectionMaxSeconds = 18f;
         private const float SignalPedestrianClearanceMinSeconds = 1f;
         private const float SignalControllerStateRefreshSeconds = 1.0f;
         private const float SignalPedestrianScanSeconds = 1.25f;
@@ -643,6 +643,23 @@ namespace PedestrianCrossingToolkit
         private static readonly Queue<DeferredNetworkRelease> DeferredNetworkReleases = new Queue<DeferredNetworkRelease>();
         private static readonly HashSet<ushort> DeferredNetworkReleaseIds = new HashSet<ushort>();
         private static readonly object DeferredNetworkReleaseGate = new object();
+        internal static bool LastBuildHadFailure { get; private set; }
+        private static readonly HashSet<int> FailedBuildAssets = new HashSet<int>();
+        internal static void MarkAssetBuildFailure(int assetId)
+        {
+            LastBuildHadFailure = true;
+            if (assetId > 0) FailedBuildAssets.Add(assetId);
+        }
+
+        private static DeferredNetworkRelease? _activeDeferredNetworkRelease;
+        private static int _deferredReleaseRetryFrames;
+        private static readonly Dictionary<ushort, DeferredNetworkRelease> BuiltSegmentIdentities = new Dictionary<ushort, DeferredNetworkRelease>();
+        private static readonly Dictionary<ushort, DeferredNodeRelease> BuiltNodeIdentities = new Dictionary<ushort, DeferredNodeRelease>();
+
+        internal static bool HasPendingNetworkRelease
+        {
+            get { lock (DeferredNetworkReleaseGate) return DeferredNetworkReleaseIds.Count != 0 || DeferredNodeReleaseIds.Count != 0; }
+        }
         private static readonly HashSet<string> BuiltSubwayEntranceVisualKeys = new HashSet<string>();
         private static readonly Dictionary<string, List<int>> BuiltSubwayEntranceVisualAssets = new Dictionary<string, List<int>>();
         private static readonly Dictionary<string, List<GameObject>> BuiltSubwayEntranceVisualObjects = new Dictionary<string, List<GameObject>>();
@@ -651,6 +668,9 @@ namespace PedestrianCrossingToolkit
         private static readonly List<CrossingPathWorkOrder> PendingSignalControlOrders = new List<CrossingPathWorkOrder>();
         private static readonly Dictionary<ushort, NetNode.Flags> BuiltSignalNodeSnapshots = new Dictionary<ushort, NetNode.Flags>();
         private static readonly Dictionary<ushort, NetSegment.Flags> BuiltSignalSegmentSnapshots = new Dictionary<ushort, NetSegment.Flags>();
+        private static readonly Dictionary<ushort, DeferredNetworkRelease> SignalSegmentIdentities = new Dictionary<ushort, DeferredNetworkRelease>();
+        private static readonly Dictionary<ushort, DeferredNodeRelease> SignalNodeIdentities = new Dictionary<ushort, DeferredNodeRelease>();
+        private static readonly Dictionary<ushort, NetSegment.Flags> SignalSegmentOwnedMasks = new Dictionary<ushort, NetSegment.Flags>();
         private static readonly List<SignalControllerStateRestore> PendingSignalControllerStateRestores = new List<SignalControllerStateRestore>();
         private static readonly Dictionary<NetInfo, List<ushort>> ManagedSegmentsByPrefab = new Dictionary<NetInfo, List<ushort>>();
         private static readonly List<ushort> VehicleRoadSegments = new List<ushort>();
@@ -659,11 +679,37 @@ namespace PedestrianCrossingToolkit
         {
             internal readonly ushort SegmentId;
             internal readonly string Reason;
+            internal readonly uint BuildIndex;
+            internal readonly uint Lanes;
+            internal readonly ushort StartNode;
+            internal readonly ushort EndNode;
+            internal readonly string PrefabName;
 
-            internal DeferredNetworkRelease(ushort segmentId, string reason)
+            internal DeferredNetworkRelease(ushort segmentId, string reason, ref NetSegment segment)
+                : this(segmentId, reason, segment.m_buildIndex, segment.m_lanes,
+                    segment.m_startNode, segment.m_endNode,
+                    segment.Info == null ? string.Empty : segment.Info.name)
+            {
+            }
+
+            internal DeferredNetworkRelease(ushort segmentId, string reason, uint buildIndex,
+                uint lanes, ushort startNode, ushort endNode, string prefabName)
             {
                 SegmentId = segmentId;
                 Reason = reason;
+                BuildIndex = buildIndex;
+                Lanes = lanes;
+                StartNode = startNode;
+                EndNode = endNode;
+                PrefabName = prefabName;
+            }
+
+            internal bool Matches(ref NetSegment segment)
+            {
+                return (segment.m_flags & NetSegment.Flags.Created) != 0
+                    && segment.m_buildIndex == BuildIndex && segment.m_lanes == Lanes
+                    && segment.m_startNode == StartNode && segment.m_endNode == EndNode
+                    && segment.Info != null && segment.Info.name == PrefabName;
             }
         }
         private static readonly CrossingPlacementAsset[] SignalRoadStateAssetBuffer = new CrossingPlacementAsset[2048];
@@ -783,6 +829,11 @@ namespace PedestrianCrossingToolkit
         internal static bool TryValidateRoadReplacementNetworkAsset(int assetId, out string error)
         {
             error = string.Empty;
+            if (FailedBuildAssets.Contains(assetId))
+            {
+                error = "crossing construction did not complete";
+                return false;
+            }
             CrossingPlacementAsset asset;
             if (!CrossingPlacementRegistry.TryGetAssetById(assetId, out asset))
             {
@@ -821,9 +872,9 @@ namespace PedestrianCrossingToolkit
                 asset.Placement.Mode == PedestrianToolMode.PedestrianBridge;
             if (gradeSeparated &&
                 RoadPlacementRules.IsRoadGradeSeparatedPlacementTarget(asset.Placement.SegmentId) &&
-                !GradeSeparatedVanillaCrossingSuppression.HasActiveSuppressionForAsset(asset))
+                GradeSeparatedVanillaCrossingSuppression.HasUnsuppressedTargetForAsset(asset))
             {
-                error = "restored grade-separated crossing has no active surface-crossing suppression";
+                error = "restored grade-separated crossing has an unsuppressed surface-crossing target";
                 return false;
             }
 
@@ -995,6 +1046,7 @@ namespace PedestrianCrossingToolkit
                 return 0;
 
             RemoveUnityVisualsForAssets(assetIds, assetCount);
+            int visualStartIndex = BuiltBridgeConcreteObjects.Count;
             EnsureBuildBufferCapacity();
             int accessOrderCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(AccessBuildBuffer);
             int pathOrderCount = CrossingPathWorkOrderPlanner.CopyWorkOrdersTo(BuildBuffer);
@@ -1051,6 +1103,8 @@ namespace PedestrianCrossingToolkit
                 AddAccessVisual(order);
             }
 
+            ConsolidateVisualRange(visualStartIndex, false);
+
             int validatedAssets = 0;
             int maxAssetCount = Mathf.Min(assetCount, assetIds.Length);
             for (int i = 0; i < maxAssetCount; i++)
@@ -1106,8 +1160,8 @@ namespace PedestrianCrossingToolkit
 
         public static void CancelBuildBatch()
         {
-            if (!_batchBuildActive)
-                PendingSignalControlOrders.Clear();
+            _activeBuildAssetId = 0;
+            PendingSignalControlOrders.Clear();
             ManagedSegmentsByPrefab.Clear();
             VehicleRoadSegments.Clear();
             _batchBuildActive = false;
@@ -1117,11 +1171,15 @@ namespace PedestrianCrossingToolkit
         {
             skipped = 0;
             int built = 0;
+            LastBuildHadFailure = false;
+            if (assetIdFilter > 0) FailedBuildAssets.Remove(assetIdFilter);
+            else FailedBuildAssets.Clear();
             _activeBuildAssetId = 0;
             bool filteredBuild = assetIdFilter > 0;
             if (clearExistingVisuals && !_batchBuildActive)
                 ClearBuiltVisualObjects();
 
+            int visualStartIndex = BuiltBridgeConcreteObjects.Count;
             PendingSignalControlOrders.Clear();
             EnsureBuildBufferCapacity();
             int accessCount = CrossingLandingConnectorPlanner.CopyAccessAssetsTo(AccessBuildBuffer);
@@ -1143,6 +1201,7 @@ namespace PedestrianCrossingToolkit
                 _activeBuildAssetId = order.AssetId;
                 if (!ShouldBuild(order))
                 {
+                    if (!order.HasPrefab) MarkAssetBuildFailure(order.AssetId);
                     skipped++;
                     continue;
                 }
@@ -1225,7 +1284,7 @@ namespace PedestrianCrossingToolkit
                 }
 
                 ToolBase.ToolErrors errors = order.Kind == CrossingPathWorkOrderKind.SubwayPath
-                    ? CreateExactPath(order.Prefab, pathStart + pathBuildOffset, pathEnd + pathBuildOffset, startElevation, endElevation, out firstNode, out lastNode, out segment)
+                    ? CreateExactPath(order.Prefab, pathStart + pathBuildOffset, pathEnd + pathBuildOffset, startElevation, endElevation, Vector3.zero, startNodeId, endNodeId, out firstNode, out lastNode, out segment)
                     : CreatePath(order.Prefab, pathStart + pathBuildOffset, pathEnd + pathBuildOffset, startElevation, endElevation, startNodeId, endNodeId, out firstNode, out lastNode, out segment);
                 if (errors != ToolBase.ToolErrors.None || segment == 0)
                 {
@@ -1301,6 +1360,7 @@ namespace PedestrianCrossingToolkit
 
                 if (!ShouldBuild(order))
                 {
+                    if (!order.HasPrefab) MarkAssetBuildFailure(order.AssetId);
                     skipped++;
                     continue;
                 }
@@ -1575,6 +1635,7 @@ namespace PedestrianCrossingToolkit
                 _lastValidationSummary = ValidateBuiltConnectors();
 
             PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connector path build complete: built=" + built + " connectors=" + connectorBuilt + " access=" + accessBuilt + " skipped=" + skipped + " validation=" + _lastValidationSummary.ToLogString());
+            ConsolidateVisualRange(visualStartIndex, false);
             _activeBuildAssetId = 0;
             return built;
         }
@@ -2439,39 +2500,18 @@ namespace PedestrianCrossingToolkit
 
         public static int ClearBuiltPaths(string reason)
         {
-            NetManager netManager = NetManager.instance;
-            int removed = 0;
+            int queued = 0;
             try
             {
                 for (int i = BuiltSegments.Count - 1; i >= 0; i--)
                 {
-                    ushort segmentId = BuiltSegments[i];
-                    if (segmentId == 0 || segmentId >= netManager.m_segments.m_size)
-                        continue;
-
-                    ref NetSegment segment = ref netManager.m_segments.m_buffer[segmentId];
-                    if ((segment.m_flags & NetSegment.Flags.Created) == 0)
-                        continue;
-
-                    removed += ReleaseSegmentAndUnusedNodes(netManager, segmentId) ? 1 : 0;
+                    if (QueueDeferredNetworkRelease(BuiltSegments[i], reason))
+                        queued++;
                 }
-
                 for (int i = BuiltNodes.Count - 1; i >= 0; i--)
-                {
-                    ushort nodeId = BuiltNodes[i];
-                    if (nodeId == 0 || nodeId >= netManager.m_nodes.m_size)
-                        continue;
-
-                    ref NetNode node = ref netManager.m_nodes.m_buffer[nodeId];
-                    if ((node.m_flags & NetNode.Flags.Created) == 0)
-                        continue;
-
-                    if (ReleaseUnusedManagedNode(netManager, nodeId))
-                        removed++;
-                }
+                    QueueDeferredNodeRelease(BuiltNodes[i]);
 
                 RevertBuiltSignalControls();
-                // Restore vanilla/TM:PE crossing permissions only after PCT-owned paths are gone.
                 GradeSeparatedVanillaCrossingSuppression.Clear(reason);
             }
             finally
@@ -2479,8 +2519,8 @@ namespace PedestrianCrossingToolkit
                 ClearBuiltPathTracking(false);
             }
 
-            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connector path clear: reason=" + reason + " removed=" + removed);
-            return removed;
+            PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Connector path clear queued: reason=" + reason + " segments=" + queued);
+            return queued;
         }
 
         public static int ForgetBuiltPathsForLevelUnload(string reason)
@@ -2508,6 +2548,7 @@ namespace PedestrianCrossingToolkit
 
         public static int RemoveBuiltPathsForAsset(int assetId, string reason)
         {
+            FailedBuildAssets.Remove(assetId);
             if (assetId <= 0)
                 return 0;
 
@@ -2562,17 +2603,33 @@ namespace PedestrianCrossingToolkit
             DeferredNetworkRelease release;
             lock (DeferredNetworkReleaseGate)
             {
-                if (DeferredNetworkReleases.Count == 0)
+                if (_activeDeferredNetworkRelease.HasValue)
                     return;
+                if (_deferredReleaseRetryFrames > 0)
+                {
+                    _deferredReleaseRetryFrames--;
+                    return;
+                }
+                if (DeferredNetworkReleases.Count == 0)
+                {
+                    ProcessDeferredNodeRelease();
+                    return;
+                }
 
                 release = DeferredNetworkReleases.Dequeue();
+                _activeDeferredNetworkRelease = release;
             }
 
+            bool retry = false;
             try
             {
                 NetManager netManager = NetManager.instance;
-                if (netManager == null
-                    || release.SegmentId == 0
+                if (netManager == null)
+                {
+                    retry = true;
+                    return;
+                }
+                if (release.SegmentId == 0
                     || release.SegmentId >= netManager.m_segments.m_size)
                 {
                     return;
@@ -2582,8 +2639,15 @@ namespace PedestrianCrossingToolkit
                 if ((segment.m_flags & NetSegment.Flags.Created) == 0)
                     return;
 
+                if (!release.Matches(ref segment))
+                {
+                    Debug.LogWarning("[PedestrianCrossingToolkit] Deferred path identity changed; retained the live network segment.");
+                    return;
+                }
+
                 if (!ReleaseSegmentAndUnusedNodes(netManager, release.SegmentId))
                 {
+                    retry = true;
                     Debug.LogError("[PedestrianCrossingToolkit] Deferred managed path release failed: reason="
                                    + release.Reason
                                    + " segment="
@@ -2593,18 +2657,38 @@ namespace PedestrianCrossingToolkit
             finally
             {
                 lock (DeferredNetworkReleaseGate)
-                    DeferredNetworkReleaseIds.Remove(release.SegmentId);
+                {
+                    if (retry)
+                    {
+                        DeferredNetworkReleases.Enqueue(release);
+                        _deferredReleaseRetryFrames = 256;
+                    }
+                    else
+                        DeferredNetworkReleaseIds.Remove(release.SegmentId);
+                    _activeDeferredNetworkRelease = null;
+                }
             }
         }
 
-        private static void QueueDeferredNetworkRelease(ushort segmentId, string reason)
+        private static bool QueueDeferredNetworkRelease(ushort segmentId, string reason)
         {
+            NetManager manager = NetManager.instance;
+            if (manager == null || segmentId == 0 || segmentId >= manager.m_segments.m_buffer.Length)
+                return false;
+            ref NetSegment segment = ref manager.m_segments.m_buffer[segmentId];
+            if ((segment.m_flags & NetSegment.Flags.Created) == 0 || !IsManagedPathPrefab(segment.Info))
+                return false;
+            DeferredNetworkRelease release;
+            if (!BuiltSegmentIdentities.TryGetValue(segmentId, out release) || !release.Matches(ref segment))
+                return false;
+            release = new DeferredNetworkRelease(segmentId, reason, ref segment);
             lock (DeferredNetworkReleaseGate)
             {
                 if (!DeferredNetworkReleaseIds.Add(segmentId))
-                    return;
+                    return false;
 
-                DeferredNetworkReleases.Enqueue(new DeferredNetworkRelease(segmentId, reason));
+                DeferredNetworkReleases.Enqueue(release);
+                return true;
             }
         }
 
@@ -2615,7 +2699,11 @@ namespace PedestrianCrossingToolkit
             {
                 cleared = DeferredNetworkReleases.Count;
                 DeferredNetworkReleases.Clear();
+                _deferredReleaseRetryFrames = 0;
                 DeferredNetworkReleaseIds.Clear();
+                _activeDeferredNetworkRelease = null;
+                DeferredNodeReleases.Clear();
+                DeferredNodeReleaseIds.Clear();
             }
 
             if (cleared > 0)
@@ -2639,6 +2727,20 @@ namespace PedestrianCrossingToolkit
         public static int ClearSignalRoadStateForAsset(CrossingPlacementAsset asset, string reason)
         {
             if (asset.Id == 0 || asset.Placement.Mode != PedestrianToolMode.SignalCrossing)
+                return 0;
+
+            ushort cleanupNode;
+            if (!TryGetSignalRoadStateCleanupNode(asset, out cleanupNode))
+                return 0;
+            NetManager manager = NetManager.instance;
+            if (manager == null || cleanupNode >= manager.m_nodes.m_buffer.Length)
+                return 0;
+            ref NetNode liveNode = ref manager.m_nodes.m_buffer[cleanupNode];
+            if ((liveNode.m_flags & NetNode.Flags.Created) == 0
+                || liveNode.Info == null || !(liveNode.Info.m_netAI is RoadBaseAI)
+                || (asset.SignalRoadState.HasNativeIdentity
+                    ? liveNode.m_buildIndex != asset.SignalRoadState.NativeBuildIndex
+                    : HorizontalDistance(liveNode.m_position, asset.Placement.WorldPosition) > 2f))
                 return 0;
 
             bool restoredSnapshot = RestoreSignalRoadStateSnapshot(asset.SignalRoadState, asset.Id, reason);
@@ -2710,7 +2812,8 @@ namespace PedestrianCrossingToolkit
             node.m_flags &= ~NetNode.Flags.Junction;
             node.m_flags |= NetNode.Flags.Middle;
 
-            int attachedSegmentCount = node.CountSegments();
+            // Native node slots are sparse after a segment is removed.
+            const int attachedSegmentCount = 8;
             uint frame = GetCurrentSimulationFrame();
             for (int i = 0; i < attachedSegmentCount; i++)
             {
@@ -2845,7 +2948,8 @@ namespace PedestrianCrossingToolkit
 
             List<SignalRoadSegmentState> segments = new List<SignalRoadSegmentState>();
             uint frame = GetCurrentSimulationFrame();
-            int segmentCount = node.CountSegments();
+            // Native node slots are sparse after a segment is removed.
+            const int segmentCount = 8;
             for (int i = 0; i < segmentCount; i++)
             {
                 ushort segmentId = node.GetSegment(i);
@@ -2877,10 +2981,10 @@ namespace PedestrianCrossingToolkit
                     out vehicles,
                     out pedestrians);
 
-                segments.Add(new SignalRoadSegmentState(segmentId, startNode, segment.m_flags, vehicleState, pedestrianState, vehicles, pedestrians));
+                segments.Add(new SignalRoadSegmentState(segmentId, startNode, segment.m_flags, vehicleState, pedestrianState, vehicles, pedestrians, true, segment.m_buildIndex));
             }
 
-            return new SignalRoadStateSnapshot(true, nodeId, node.m_flags, segments.ToArray());
+            return new SignalRoadStateSnapshot(true, nodeId, node.m_flags, segments.ToArray(), true, node.m_buildIndex);
         }
 
         private static BuiltConnectorValidationSummary ValidateBuiltConnectors()
@@ -3084,7 +3188,9 @@ namespace PedestrianCrossingToolkit
 
             if (info == PedestrianCrossingPrefabCatalog.PedestrianPathPrefab
                 || info == PedestrianCrossingPrefabCatalog.PedestrianBridgePrefab
-                || info == PedestrianCrossingPrefabCatalog.PedestrianTunnelPrefab)
+                || info == PedestrianCrossingPrefabCatalog.PedestrianTunnelPrefab
+                || info == PedestrianCrossingPrefabCatalog.SurfaceCrossingPathPrefab
+                || info == PedestrianCrossingPrefabCatalog.BridgeDeckBuildPrefab)
             {
                 return true;
             }
@@ -3980,6 +4086,7 @@ namespace PedestrianCrossingToolkit
             AddSubwayEntranceTileBands(assetId, position, frame, width, length);
             AddSubwayEntranceStairRails(assetId, position, frame, width, length);
             AddSubwayEntranceCanopy(assetId, position, frame, width);
+            ConsolidateVisualRange(objectStartIndex, true);
             RegisterSubwayEntranceVisualObjects(key, objectStartIndex);
             PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Subway entrance visual built: asset="
                       + assetId
@@ -4260,7 +4367,8 @@ namespace PedestrianCrossingToolkit
             mesh.RecalculateBounds();
 
             MeshFilter filter = roof.AddComponent<MeshFilter>();
-            filter.mesh = mesh;
+            filter.sharedMesh = mesh;
+            roof.AddComponent<SourceVisualMeshOwner>().OwnedMesh = mesh;
             MeshRenderer renderer = roof.AddComponent<MeshRenderer>();
             renderer.material = GetSubwayEntranceRoofMaterial();
             ConfigureSubwayEntranceSurfaceRenderer(renderer);
@@ -4451,7 +4559,8 @@ namespace PedestrianCrossingToolkit
             mesh.RecalculateBounds();
 
             MeshFilter filter = stairs.AddComponent<MeshFilter>();
-            filter.mesh = mesh;
+            filter.sharedMesh = mesh;
+            stairs.AddComponent<SourceVisualMeshOwner>().OwnedMesh = mesh;
             MeshRenderer renderer = stairs.AddComponent<MeshRenderer>();
             renderer.material = GetSubwayEntranceWallMaterial();
             ConfigureSubwayEntranceSurfaceRenderer(renderer);
@@ -4499,7 +4608,8 @@ namespace PedestrianCrossingToolkit
             mesh.RecalculateBounds();
 
             MeshFilter filter = section.AddComponent<MeshFilter>();
-            filter.mesh = mesh;
+            filter.sharedMesh = mesh;
+            section.AddComponent<SourceVisualMeshOwner>().OwnedMesh = mesh;
             MeshRenderer renderer = section.AddComponent<MeshRenderer>();
             renderer.material = material ?? GetBridgeConcreteMaterial();
             ConfigureSubwayEntranceSurfaceRenderer(renderer);
@@ -4556,7 +4666,8 @@ namespace PedestrianCrossingToolkit
                 return false;
 
             bool changed = false;
-            int segmentCount = node.CountSegments();
+            // Native node slots are sparse after a segment is removed.
+            const int segmentCount = 8;
             for (int i = 0; i < segmentCount; i++)
             {
                 ushort segmentId = node.GetSegment(i);
@@ -4585,8 +4696,7 @@ namespace PedestrianCrossingToolkit
                 else
                     continue;
 
-                if (!BuiltSignalSegmentSnapshots.ContainsKey(segmentId))
-                    BuiltSignalSegmentSnapshots.Add(segmentId, segment.m_flags);
+                RememberSignalSegment(segmentId, ref segment, crossingFlag);
 
                 bool segmentFlagChanged = enabled
                     ? (segment.m_flags & crossingFlag) == 0
@@ -5034,7 +5144,7 @@ namespace PedestrianCrossingToolkit
             Vector3 firstDirection = Vector3.zero;
             Vector3 secondDirection = Vector3.zero;
             int directions = 0;
-            for (int i = 0; i < 2; i++)
+            for (int i = 0; i < 8; i++)
             {
                 ushort segmentId = node.GetSegment(i);
                 Vector3 direction;
@@ -5153,20 +5263,11 @@ namespace PedestrianCrossingToolkit
             if (BuiltSignalControllers.Count == 0 || simulationTimeDelta <= 0f)
                 return;
 
-            for (int i = 0; i < BuiltSignalControllers.Count; i++)
-            {
-                BuiltSignalController controller = BuiltSignalControllers[i];
-                controller.SignalStateRefreshTime += simulationTimeDelta;
-                controller.PedestrianScanTime += simulationTimeDelta;
-                controller.PedestrianFullScanFallbackTime += simulationTimeDelta;
-                controller.PhaseTime += simulationTimeDelta;
-                BuiltSignalControllers[i] = controller;
-            }
-
             int firstRefreshedIndex;
             int secondRefreshedIndex;
             int deferredScans;
             RefreshScheduledSignalPedestrianCaches(
+                simulationTimeDelta,
                 out firstRefreshedIndex,
                 out secondRefreshedIndex,
                 out deferredScans);
@@ -5225,6 +5326,7 @@ namespace PedestrianCrossingToolkit
         }
 
         private static void RefreshScheduledSignalPedestrianCaches(
+            float simulationTimeDelta,
             out int firstRefreshedIndex,
             out int secondRefreshedIndex,
             out int deferredScans)
@@ -5239,42 +5341,58 @@ namespace PedestrianCrossingToolkit
             if (_signalPedestrianScanCursor < 0 || _signalPedestrianScanCursor >= controllerCount)
                 _signalPedestrianScanCursor = 0;
 
-            int startIndex = _signalPedestrianScanCursor;
-            int lastRefreshedIndex = -1;
-            int refreshed = 0;
-            for (int priorityPass = 0; priorityPass < 2; priorityPass++)
+            // One traversal advances every clock and selects exactly the same
+            // active-first, rotating pair as the former two priority passes.
+            int firstActive = -1, secondActive = -1;
+            int firstIdle = -1, secondIdle = -1;
+            int dueCount = 0;
+            for (int visited = 0; visited < controllerCount; visited++)
             {
-                for (int visited = 0; visited < controllerCount; visited++)
+                int index = (_signalPedestrianScanCursor + visited) % controllerCount;
+                BuiltSignalController controller = BuiltSignalControllers[index];
+                controller.SignalStateRefreshTime += simulationTimeDelta;
+                controller.PedestrianScanTime += simulationTimeDelta;
+                controller.PedestrianFullScanFallbackTime += simulationTimeDelta;
+                controller.PhaseTime += simulationTimeDelta;
+                BuiltSignalControllers[index] = controller;
+                if (controller.PedestrianScanTime < SignalPedestrianScanSeconds)
+                    continue;
+
+                dueCount++;
+                if (controller.Phase != SignalControllerPhase.Idle)
                 {
-                    int index = (startIndex + visited) % controllerCount;
-                    BuiltSignalController controller = BuiltSignalControllers[index];
-                    bool activeSafetyPhase = controller.Phase != SignalControllerPhase.Idle;
-                    if ((priorityPass == 0) != activeSafetyPhase
-                        || controller.PedestrianScanTime < SignalPedestrianScanSeconds)
-                    {
-                        continue;
-                    }
-
-                    if (refreshed >= SignalPedestrianScansPerUpdate)
-                    {
-                        deferredScans++;
-                        continue;
-                    }
-
-                    RefreshSignalPedestrianCache(ref controller);
-                    BuiltSignalControllers[index] = controller;
-                    if (refreshed == 0)
-                        firstRefreshedIndex = index;
-                    else
-                        secondRefreshedIndex = index;
-                    refreshed++;
-                    lastRefreshedIndex = index;
+                    if (firstActive < 0) firstActive = index;
+                    else if (secondActive < 0) secondActive = index;
+                }
+                else
+                {
+                    if (firstIdle < 0) firstIdle = index;
+                    else if (secondIdle < 0) secondIdle = index;
                 }
             }
 
+            firstRefreshedIndex = firstActive >= 0 ? firstActive : firstIdle;
+            secondRefreshedIndex = firstActive >= 0
+                ? (secondActive >= 0 ? secondActive : firstIdle)
+                : secondIdle;
+            int refreshed = 0;
+            int lastRefreshedIndex = -1;
+            for (int slot = 0; slot < SignalPedestrianScansPerUpdate; slot++)
+            {
+                int index = slot == 0 ? firstRefreshedIndex : secondRefreshedIndex;
+                if (index < 0)
+                    continue;
+                BuiltSignalController controller = BuiltSignalControllers[index];
+                RefreshSignalPedestrianCache(ref controller);
+                BuiltSignalControllers[index] = controller;
+                refreshed++;
+                lastRefreshedIndex = index;
+            }
+
+            deferredScans = dueCount - refreshed;
             _signalPedestrianScanCursor = lastRefreshedIndex >= 0
                 ? (lastRefreshedIndex + 1) % controllerCount
-                : (startIndex + 1) % controllerCount;
+                : (_signalPedestrianScanCursor + 1) % controllerCount;
         }
 
         private static void UpdateSignalController(ref BuiltSignalController controller, float delta, bool pedestrianCacheRefreshed)
@@ -5335,8 +5453,9 @@ namespace PedestrianCrossingToolkit
                     SetSignalControllerAllRed(ref controller);
                     controller.CooldownTime = 0f;
                     bool minimumClearanceMet = controller.PhaseTime >= GetSignalPedestrianClearanceSeconds(ref controller);
-                    bool hardClearanceLimitMet = controller.PhaseTime >= SignalPedestrianClearanceHardMaxSeconds;
-                    if (minimumClearanceMet && (!pedestriansOnCrossing || hardClearanceLimitMet))
+                    // A timeout cannot prove that vanilla's pedestrians have cleared.
+                    // Wait for this controller's next existing scheduled observation.
+                    if (minimumClearanceMet && pedestrianCacheRefreshed && !pedestriansOnCrossing)
                     {
                         controller.Phase = SignalControllerPhase.Idle;
                         controller.PhaseTime = 0f;
@@ -5426,7 +5545,8 @@ namespace PedestrianCrossingToolkit
             if ((node.m_flags & NetNode.Flags.Created) == 0)
                 return;
 
-            int segmentCount = node.CountSegments();
+            // Native node slots are sparse after a segment is removed.
+            const int segmentCount = 8;
             for (int i = 0; i < segmentCount; i++)
             {
                 ushort segmentId = node.GetSegment(i);
@@ -5633,7 +5753,10 @@ namespace PedestrianCrossingToolkit
 
             CitizenManager citizenManager = CitizenManager.instance;
             if (citizenManager == null || citizenManager.m_instances == null || citizenManager.m_instances.m_buffer == null)
+            {
+                controller.HasPedestriansOnCrossing = true; // Unavailable is not a clearance proof.
                 return;
+            }
 
             float crossingRadiusSqr = SignalPedestrianOnCrossingRadius * SignalPedestrianOnCrossingRadius;
             CitizenInstance[] buffer = citizenManager.m_instances.m_buffer;
@@ -5678,7 +5801,7 @@ namespace PedestrianCrossingToolkit
                     while (instanceId != 0 && traversed++ < traversalLimit)
                     {
                         if (instanceId >= buffer.Length)
-                            break;
+                            return false;
 
                         CitizenInstance instance = buffer[instanceId];
                         ushort nextInstanceId = instance.m_nextGridInstance;
@@ -5690,6 +5813,8 @@ namespace PedestrianCrossingToolkit
 
                         instanceId = nextInstanceId;
                     }
+                    if (instanceId != 0)
+                        return false; // Corrupt/cyclic grid: use the existing complete buffer fallback.
                 }
             }
 
@@ -5740,7 +5865,10 @@ namespace PedestrianCrossingToolkit
 
             CitizenManager citizenManager = CitizenManager.instance;
             if (citizenManager == null || citizenManager.m_instances == null || citizenManager.m_instances.m_buffer == null)
+            {
+                controller.HasPedestriansOnCrossing = true; // Unavailable is not a clearance proof.
                 return;
+            }
 
             float nearRadiusSqr = SignalPedestrianDetectionRadius * SignalPedestrianDetectionRadius;
             float waitingRadiusSqr = SignalPedestrianWaitingZebraEdgeRadius * SignalPedestrianWaitingZebraEdgeRadius;
@@ -5754,6 +5882,11 @@ namespace PedestrianCrossingToolkit
             }
 
             controller.PedestrianFullScanFallbackTime = 0f;
+            controller.HasPedestriansNear = false;
+            controller.HasPedestriansWaitingAtEntrance = false;
+            controller.HasPedestriansOnCrossing = false;
+            controller.PedestriansNearCount = 0;
+            controller.PedestrianDemandCandidateCount = 0;
             ScanSignalPedestriansInBuffer(ref controller, citizenManager, buffer, nearRadiusSqr, waitingRadiusSqr, crossingRadiusSqr);
             ApplySignalNearbyDemandFallback(ref controller);
         }
@@ -5798,7 +5931,7 @@ namespace PedestrianCrossingToolkit
                     while (instanceId != 0 && traversed++ < traversalLimit)
                     {
                         if (instanceId >= buffer.Length)
-                            break;
+                            return false;
 
                         CitizenInstance instance = buffer[instanceId];
                         ushort nextInstanceId = instance.m_nextGridInstance;
@@ -5807,6 +5940,8 @@ namespace PedestrianCrossingToolkit
 
                         instanceId = nextInstanceId;
                     }
+                    if (instanceId != 0)
+                        return false; // Corrupt/cyclic grid: use the existing complete buffer fallback.
                 }
             }
 
@@ -6289,7 +6424,7 @@ namespace PedestrianCrossingToolkit
                 return SignalPedestrianGreenSeconds;
 
             float walkSeconds = (spanLength / SignalPedestrianClearanceAssumedWalkSpeed) + SignalPedestrianClearanceStartupBufferSeconds;
-            return Mathf.Clamp(walkSeconds, SignalPedestrianGreenSeconds, SignalPedestrianClearanceHardMaxSeconds);
+            return Mathf.Clamp(walkSeconds, SignalPedestrianGreenSeconds, SignalPedestrianProtectionMaxSeconds);
         }
 
         private static float GetSignalCrossingSpanLength(BuiltSignalController controller)
@@ -6484,7 +6619,8 @@ namespace PedestrianCrossingToolkit
             node.m_flags |= NetNode.Flags.TrafficLights;
 
             bool hasRegisteredRoadSegments = HasRegisteredSignalRoadSegmentAtNode(ref controller, netManager);
-            int segmentCount = node.CountSegments();
+            // Native node slots are sparse after a segment is removed.
+            const int segmentCount = 8;
             uint frame = GetCurrentSimulationFrame();
             for (int i = 0; i < segmentCount; i++)
             {
@@ -6552,7 +6688,8 @@ namespace PedestrianCrossingToolkit
 
             bool hasRegisteredRoadSegments = HasRegisteredSignalRoadSegmentAtNode(ref controller, netManager);
             uint frame = GetCurrentSimulationFrame();
-            int segmentCount = node.CountSegments();
+            // Native node slots are sparse after a segment is removed.
+            const int segmentCount = 8;
             for (int i = 0; i < segmentCount; i++)
             {
                 ushort segmentId = node.GetSegment(i);
@@ -6608,7 +6745,8 @@ namespace PedestrianCrossingToolkit
             if ((node.m_flags & NetNode.Flags.Created) == 0)
                 return false;
 
-            int segmentCount = node.CountSegments();
+            // Native node slots are sparse after a segment is removed.
+            const int segmentCount = 8;
             for (int i = 0; i < segmentCount; i++)
             {
                 ushort segmentId = node.GetSegment(i);
@@ -6634,8 +6772,14 @@ namespace PedestrianCrossingToolkit
             if ((node.m_flags & NetNode.Flags.Created) == 0)
                 return false;
 
-            if (!BuiltSignalNodeSnapshots.ContainsKey(nodeId))
-                BuiltSignalNodeSnapshots.Add(nodeId, node.m_flags);
+            DeferredNodeRelease nodeIdentity;
+            if (!SignalNodeIdentities.TryGetValue(nodeId, out nodeIdentity)
+                || nodeIdentity.BuildIndex != node.m_buildIndex || nodeIdentity.Position != node.m_position
+                || node.Info == null || nodeIdentity.PrefabName != node.Info.name)
+            {
+                BuiltSignalNodeSnapshots[nodeId] = node.m_flags;
+                SignalNodeIdentities[nodeId] = new DeferredNodeRelease { Id = nodeId, BuildIndex = node.m_buildIndex, Position = node.m_position, PrefabName = node.Info == null ? string.Empty : node.Info.name };
+            }
 
             NetNode.Flags beforeFlags = node.m_flags;
             if (enabled)
@@ -6668,7 +6812,8 @@ namespace PedestrianCrossingToolkit
                 return false;
 
             bool changed = false;
-            int segmentCount = node.CountSegments();
+            // Native node slots are sparse after a segment is removed.
+            const int segmentCount = 8;
             for (int i = 0; i < segmentCount; i++)
             {
                 ushort segmentId = node.GetSegment(i);
@@ -6700,8 +6845,7 @@ namespace PedestrianCrossingToolkit
                 else
                     continue;
 
-                if (!BuiltSignalSegmentSnapshots.ContainsKey(segmentId))
-                    BuiltSignalSegmentSnapshots.Add(segmentId, segment.m_flags);
+                RememberSignalSegment(segmentId, ref segment, crossingFlag | trafficFlag);
 
                 NetSegment.Flags beforeFlags = segment.m_flags;
                 if (enabled)
@@ -6829,7 +6973,8 @@ namespace PedestrianCrossingToolkit
             mesh.RecalculateBounds();
 
             MeshFilter filter = concrete.AddComponent<MeshFilter>();
-            filter.mesh = mesh;
+            filter.sharedMesh = mesh;
+            concrete.AddComponent<SourceVisualMeshOwner>().OwnedMesh = mesh;
             MeshRenderer renderer = concrete.AddComponent<MeshRenderer>();
             renderer.material = GetBridgeConcretePrismMaterial(role);
             ConfigureBridgeCosmeticRenderer(renderer);
@@ -7258,7 +7403,8 @@ namespace PedestrianCrossingToolkit
             mesh.RecalculateBounds();
 
             MeshFilter filter = panel.AddComponent<MeshFilter>();
-            filter.mesh = mesh;
+            filter.sharedMesh = mesh;
+            panel.AddComponent<SourceVisualMeshOwner>().OwnedMesh = mesh;
             MeshRenderer renderer = panel.AddComponent<MeshRenderer>();
             renderer.material = material ?? GetBridgeMetalMaterial();
             ConfigureBridgeShellRenderer(renderer);
@@ -7303,7 +7449,8 @@ namespace PedestrianCrossingToolkit
             mesh.RecalculateBounds();
 
             MeshFilter filter = roof.AddComponent<MeshFilter>();
-            filter.mesh = mesh;
+            filter.sharedMesh = mesh;
+            roof.AddComponent<SourceVisualMeshOwner>().OwnedMesh = mesh;
             MeshRenderer renderer = roof.AddComponent<MeshRenderer>();
             renderer.material = GetBridgeRoofMaterial();
             ConfigureBridgeShellRenderer(renderer);
@@ -7391,7 +7538,8 @@ namespace PedestrianCrossingToolkit
             mesh.RecalculateBounds();
 
             MeshFilter filter = obj.AddComponent<MeshFilter>();
-            filter.mesh = mesh;
+            filter.sharedMesh = mesh;
+            obj.AddComponent<SourceVisualMeshOwner>().OwnedMesh = mesh;
             MeshRenderer renderer = obj.AddComponent<MeshRenderer>();
             renderer.material = material ?? GetBridgeConcreteMaterial();
             ConfigureBridgeCosmeticRenderer(renderer);
@@ -7832,6 +7980,9 @@ namespace PedestrianCrossingToolkit
         {
             ClearBridgeConcreteObjects();
             BuiltSegments.Clear();
+            FailedBuildAssets.Clear();
+            BuiltSegmentIdentities.Clear();
+            BuiltNodeIdentities.Clear();
             BuiltSegmentKinds.Clear();
             BuiltSegmentAssets.Clear();
             BuiltSignalPathSegmentAssets.Clear();
@@ -7860,6 +8011,9 @@ namespace PedestrianCrossingToolkit
             {
                 BuiltSignalNodeSnapshots.Clear();
                 BuiltSignalSegmentSnapshots.Clear();
+                SignalNodeIdentities.Clear();
+                SignalSegmentIdentities.Clear();
+                SignalSegmentOwnedMasks.Clear();
             }
         }
 
@@ -7967,6 +8121,19 @@ namespace PedestrianCrossingToolkit
                 keys.Remove(removeKeys[i]);
         }
 
+        private static void RememberSignalSegment(ushort id, ref NetSegment segment, NetSegment.Flags mask)
+        {
+            DeferredNetworkRelease identity;
+            if (!SignalSegmentIdentities.TryGetValue(id, out identity) || !identity.Matches(ref segment))
+            {
+                BuiltSignalSegmentSnapshots[id] = segment.m_flags;
+                SignalSegmentIdentities[id] = new DeferredNetworkRelease(id, "signal-state", ref segment);
+                SignalSegmentOwnedMasks[id] = mask;
+            }
+            else
+                SignalSegmentOwnedMasks[id] |= mask;
+        }
+
         private static void RevertBuiltSignalControls()
         {
             NetManager netManager = NetManager.instance;
@@ -7981,7 +8148,12 @@ namespace PedestrianCrossingToolkit
                 if ((node.m_flags & NetNode.Flags.Created) == 0)
                     continue;
 
-                node.m_flags = snapshot.Value;
+                DeferredNodeRelease identity;
+                if (!SignalNodeIdentities.TryGetValue(nodeId, out identity) || node.m_buildIndex != identity.BuildIndex
+                    || node.m_position != identity.Position || node.Info == null || node.Info.name != identity.PrefabName)
+                    continue;
+                const NetNode.Flags owned = NetNode.Flags.Junction | NetNode.Flags.TrafficLights;
+                node.m_flags = (node.m_flags & ~owned) | (snapshot.Value & owned);
                 netManager.UpdateNodeFlags(nodeId);
                 netManager.UpdateNodeRenderer(nodeId, true);
                 nodeCount++;
@@ -7998,8 +8170,13 @@ namespace PedestrianCrossingToolkit
                 if ((segment.m_flags & NetSegment.Flags.Created) == 0)
                     continue;
 
-                segment.m_flags = snapshot.Value;
-                RestoreSegmentPedestrianCrossingMarkers(segmentId, snapshot.Value);
+                DeferredNetworkRelease identity;
+                NetSegment.Flags owned;
+                if (!SignalSegmentIdentities.TryGetValue(segmentId, out identity) || !identity.Matches(ref segment)
+                    || !SignalSegmentOwnedMasks.TryGetValue(segmentId, out owned))
+                    continue;
+                segment.m_flags = (segment.m_flags & ~owned) | (snapshot.Value & owned);
+                RestoreSegmentPedestrianCrossingMarkers(segmentId, segment.m_flags, owned);
                 netManager.UpdateSegmentFlags(segmentId);
                 netManager.UpdateSegmentRenderer(segmentId, true);
                 segmentCount++;
@@ -8015,6 +8192,9 @@ namespace PedestrianCrossingToolkit
 
             BuiltSignalNodeSnapshots.Clear();
             BuiltSignalSegmentSnapshots.Clear();
+            SignalNodeIdentities.Clear();
+            SignalSegmentIdentities.Clear();
+            SignalSegmentOwnedMasks.Clear();
         }
 
         private static bool RestoreSignalRoadStateSnapshot(SignalRoadStateSnapshot snapshot, int assetId, string reason)
@@ -8027,10 +8207,12 @@ namespace PedestrianCrossingToolkit
                 return false;
 
             ref NetNode node = ref netManager.m_nodes.m_buffer[snapshot.NodeId];
-            if ((node.m_flags & NetNode.Flags.Created) == 0)
+            if ((node.m_flags & NetNode.Flags.Created) == 0
+                || (snapshot.HasNativeIdentity && node.m_buildIndex != snapshot.NativeBuildIndex))
                 return false;
 
-            node.m_flags = snapshot.NodeFlags;
+            const NetNode.Flags ownedNodeFlags = NetNode.Flags.Junction | NetNode.Flags.TrafficLights;
+            node.m_flags = (node.m_flags & ~ownedNodeFlags) | (snapshot.NodeFlags & ownedNodeFlags);
             netManager.UpdateNodeFlags(snapshot.NodeId);
             netManager.UpdateNodeRenderer(snapshot.NodeId, true);
 
@@ -8044,7 +8226,8 @@ namespace PedestrianCrossingToolkit
                     continue;
 
                 ref NetSegment segment = ref netManager.m_segments.m_buffer[state.SegmentId];
-                if ((segment.m_flags & NetSegment.Flags.Created) == 0)
+                if ((segment.m_flags & NetSegment.Flags.Created) == 0
+                    || (state.HasNativeIdentity && segment.m_buildIndex != state.NativeBuildIndex))
                     continue;
 
                 bool stillAttached = state.StartNode
@@ -8103,20 +8286,24 @@ namespace PedestrianCrossingToolkit
             return (currentFlags & ~ownedEndMask) | (snapshotFlags & ownedEndMask);
         }
 
-        private static void RestoreSegmentPedestrianCrossingMarkers(ushort segmentId, NetSegment.Flags flags)
+        private static void RestoreSegmentPedestrianCrossingMarkers(ushort segmentId, NetSegment.Flags flags, NetSegment.Flags owned)
         {
             bool startAllowed = (flags & NetSegment.Flags.CrossingStart) != 0;
             bool endAllowed = (flags & NetSegment.Flags.CrossingEnd) != 0;
-            TrafficManagerPedestrianCrossingIntegration.SetPedestrianCrossingAllowed(segmentId, true, startAllowed);
-            TrafficManagerPedestrianCrossingIntegration.SetPedestrianCrossingAllowed(segmentId, false, endAllowed);
+            if ((owned & NetSegment.Flags.CrossingStart) != 0)
+                TrafficManagerPedestrianCrossingIntegration.SetPedestrianCrossingAllowed(segmentId, true, startAllowed);
+            if ((owned & NetSegment.Flags.CrossingEnd) != 0)
+                TrafficManagerPedestrianCrossingIntegration.SetPedestrianCrossingAllowed(segmentId, false, endAllowed);
 
             NetManager netManager = NetManager.instance;
             if (netManager == null || segmentId == 0 || segmentId >= netManager.m_segments.m_size)
                 return;
 
             ref NetSegment segment = ref netManager.m_segments.m_buffer[segmentId];
-            TrafficManagerPedestrianCrossingIntegration.RestoreSignalLightState(segment.m_startNode, segmentId, true);
-            TrafficManagerPedestrianCrossingIntegration.RestoreSignalLightState(segment.m_endNode, segmentId, false);
+            if ((owned & (NetSegment.Flags.CrossingStart | NetSegment.Flags.TrafficStart)) != 0)
+                TrafficManagerPedestrianCrossingIntegration.RestoreSignalLightState(segment.m_startNode, segmentId, true);
+            if ((owned & (NetSegment.Flags.CrossingEnd | NetSegment.Flags.TrafficEnd)) != 0)
+                TrafficManagerPedestrianCrossingIntegration.RestoreSignalLightState(segment.m_endNode, segmentId, false);
         }
 
         private static ToolBase.ToolErrors CreatePath(NetInfo prefab, Vector3 start, Vector3 end, float startElevation, float endElevation, out ushort firstNode, out ushort lastNode, out ushort segment)
@@ -8139,7 +8326,7 @@ namespace PedestrianCrossingToolkit
             int cost;
             int productionRate;
 
-            return NetTool.CreateNode(
+            ToolBase.ToolErrors errors = NetTool.CreateNode(
                 prefab,
                 startPoint,
                 middlePoint,
@@ -8159,6 +8346,8 @@ namespace PedestrianCrossingToolkit
                 out segment,
                 out cost,
                 out productionRate);
+            if (errors != ToolBase.ToolErrors.None || segment == 0) MarkAssetBuildFailure(_activeBuildAssetId);
+            return errors;
         }
 
         private static ToolBase.ToolErrors CreateExactPath(NetInfo prefab, Vector3 start, Vector3 end, float startElevation, float endElevation, out ushort firstNode, out ushort lastNode, out ushort segment)
@@ -8172,12 +8361,15 @@ namespace PedestrianCrossingToolkit
             lastNode = 0;
             segment = 0;
             if (prefab == null)
-                return ToolBase.ToolErrors.CannotConnect;
+                return RecordPathBuildFailure(ToolBase.ToolErrors.CannotConnect);
 
             NetManager netManager = NetManager.instance;
             SimulationManager simulationManager = SimulationManager.instance;
             if (netManager == null || simulationManager == null)
-                return ToolBase.ToolErrors.CannotConnect;
+                return RecordPathBuildFailure(ToolBase.ToolErrors.CannotConnect);
+
+            if (!CanAttachExactPathNode(netManager, startNodeId) || !CanAttachExactPathNode(netManager, endNodeId))
+                return RecordPathBuildFailure(ToolBase.ToolErrors.CannotConnect);
 
             Vector3 direction = end - start;
             direction.y = 0f;
@@ -8209,7 +8401,7 @@ namespace PedestrianCrossingToolkit
                 if (firstNode == 0)
                 {
                     if (!netManager.CreateNode(out firstNode, ref randomizer, prefab, startPosition, buildIndex))
-                        return ToolBase.ToolErrors.CannotConnect;
+                        return RecordPathBuildFailure(ToolBase.ToolErrors.CannotConnect);
 
                     createdFirstNode = true;
                 }
@@ -8222,14 +8414,14 @@ namespace PedestrianCrossingToolkit
                             ReleaseUnusedManagedNode(netManager, firstNode);
 
                         firstNode = 0;
-                        return ToolBase.ToolErrors.CannotConnect;
+                        return RecordPathBuildFailure(ToolBase.ToolErrors.CannotConnect);
                     }
 
                     createdLastNode = true;
                 }
 
                 if (firstNode == lastNode)
-                    return ToolBase.ToolErrors.TooShort;
+                    return RecordPathBuildFailure(ToolBase.ToolErrors.TooShort);
 
                 if (!netManager.CreateSegment(out segment, ref randomizer, prefab, firstNode, lastNode, direction, -direction, buildIndex, buildIndex, false))
                 {
@@ -8240,7 +8432,7 @@ namespace PedestrianCrossingToolkit
 
                     firstNode = 0;
                     lastNode = 0;
-                    return ToolBase.ToolErrors.CannotConnect;
+                    return RecordPathBuildFailure(ToolBase.ToolErrors.CannotConnect);
                 }
 
                 return ToolBase.ToolErrors.None;
@@ -8268,8 +8460,22 @@ namespace PedestrianCrossingToolkit
                                + endPosition
                                + " error="
                                + e);
-                return ToolBase.ToolErrors.CannotConnect;
+                return RecordPathBuildFailure(ToolBase.ToolErrors.CannotConnect);
             }
+        }
+
+        private static ToolBase.ToolErrors RecordPathBuildFailure(ToolBase.ToolErrors error)
+        {
+            MarkAssetBuildFailure(_activeBuildAssetId);
+            return error;
+        }
+
+        private static bool CanAttachExactPathNode(NetManager manager, ushort id)
+        {
+            if (id == 0) return true;
+            if (id >= manager.m_nodes.m_buffer.Length) return false;
+            ref NetNode node = ref manager.m_nodes.m_buffer[id];
+            return (node.m_flags & NetNode.Flags.Created) != 0 && IsManagedPathPrefab(node.Info) && node.CountSegments() < 8;
         }
 
         private static NetTool.ControlPoint CreateControlPoint(Vector3 position, Vector3 direction, float elevation)
@@ -8425,10 +8631,16 @@ namespace PedestrianCrossingToolkit
 
         private static void AddNode(ushort nodeId)
         {
-            if (nodeId == 0 || BuiltNodes.Contains(nodeId))
+            if (nodeId == 0)
                 return;
 
-            BuiltNodes.Add(nodeId);
+            NetManager manager = NetManager.instance;
+            if (manager == null || nodeId >= manager.m_nodes.m_buffer.Length)
+                return;
+            ref NetNode node = ref manager.m_nodes.m_buffer[nodeId];
+            BuiltNodeIdentities[nodeId] = new DeferredNodeRelease { Id = nodeId, BuildIndex = node.m_buildIndex, PrefabName = node.Info == null ? string.Empty : node.Info.name, Position = node.m_position };
+            if (!BuiltNodes.Contains(nodeId))
+                BuiltNodes.Add(nodeId);
         }
 
         private static void AddTerminalNode(ushort nodeId, CrossingPathWorkOrderKind kind)
@@ -8572,7 +8784,9 @@ namespace PedestrianCrossingToolkit
                               + from
                               + " to="
                               + to);
-                    continue;
+                    // Do not connect the next section to an earlier endpoint across
+                    // a failed section, or fall back to a second whole-span path.
+                    return true;
                 }
 
                 AddSegment(segment);
@@ -8749,7 +8963,9 @@ namespace PedestrianCrossingToolkit
                 && segmentId < netManager.m_segments.m_size
                 && segmentId < netManager.m_segments.m_buffer.Length)
             {
-                AddManagedSegmentToIndex(netManager.m_segments.m_buffer[segmentId].Info, segmentId);
+                ref NetSegment owned = ref netManager.m_segments.m_buffer[segmentId];
+                BuiltSegmentIdentities[segmentId] = new DeferredNetworkRelease(segmentId, "managed-path", ref owned);
+                AddManagedSegmentToIndex(owned.Info, segmentId);
             }
 
             if (_activeBuildAssetId > 0)

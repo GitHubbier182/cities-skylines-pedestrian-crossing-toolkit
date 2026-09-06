@@ -23,6 +23,8 @@ namespace PedestrianCrossingToolkit
             private static float _cachedWetness;
             private static float _cachedSnow;
             private static float _lastWeatherTime = -1f;
+            private static float _presentedWetness = -1f;
+            private static float _presentedSnow = -1f;
 
             private Renderer _renderer;
             private MaterialPropertyBlock _properties;
@@ -63,9 +65,12 @@ namespace PedestrianCrossingToolkit
 
             internal static void UpdateAll()
             {
-                if (!UpdateWeatherCache())
+                UpdateWeatherCache();
+                if (_cachedWetness == _presentedWetness && _cachedSnow == _presentedSnow)
                     return;
 
+                _presentedWetness = _cachedWetness;
+                _presentedSnow = _cachedSnow;
                 for (int i = Instances.Count - 1; i >= 0; i--)
                 {
                     CrossingWeatherSurface instance = Instances[i];
@@ -86,11 +91,6 @@ namespace PedestrianCrossingToolkit
 
             private void ApplyWeather(bool force, bool refreshWeather)
             {
-                if (_renderer == null)
-                    _renderer = GetComponent<Renderer>();
-                if (_renderer == null || _renderer.sharedMaterial == null)
-                    return;
-
                 if (refreshWeather)
                     UpdateWeatherCache();
                 float wetness = _cachedWetness;
@@ -101,6 +101,11 @@ namespace PedestrianCrossingToolkit
                 {
                     return;
                 }
+
+                if (_renderer == null)
+                    _renderer = GetComponent<Renderer>();
+                if (_renderer == null || _renderer.sharedMaterial == null)
+                    return;
 
                 _lastWetness = wetness;
                 _lastSnow = snow;
@@ -183,6 +188,8 @@ namespace PedestrianCrossingToolkit
                 _cachedWetness = 0f;
                 _cachedSnow = 0f;
                 _lastWeatherTime = -1f;
+                _presentedWetness = -1f;
+                _presentedSnow = -1f;
             }
         }
 

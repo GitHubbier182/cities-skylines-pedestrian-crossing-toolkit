@@ -44,6 +44,36 @@ namespace PedestrianCrossingToolkit
         private static readonly Dictionary<int, RoadReplacementTransaction> RoadReplacementTransactions =
             new Dictionary<int, RoadReplacementTransaction>();
         private static int _nextRoadReplacementTransactionId = 1;
+        private static volatile RoadReplacementTransaction _activeRoadReplacement;
+        internal static bool HasActiveRoadReplacement
+        {
+            get
+            {
+                RoadReplacementTransaction active = _activeRoadReplacement;
+                return active != null && active.Phase != RoadReplacementCompleted
+                    && active.Phase != RoadReplacementFailed;
+            }
+        }
+
+        private static readonly Dictionary<int, CrossingPlacementAsset> RecoveryAssets = new Dictionary<int, CrossingPlacementAsset>();
+        internal static int RecoveryAssetCount { get { return RecoveryAssets.Count; } }
+        internal static bool IsRecoveryAssetId(int id) { return RecoveryAssets.ContainsKey(id); }
+        internal static void RetainRecoveryAsset(CrossingPlacementAsset asset) { RecoveryAssets[asset.Id] = asset; }
+        internal static void ForgetRecoveryAsset(int id) { RecoveryAssets.Remove(id); }
+        internal static void AppendRecoveryAssets(List<CrossingPlacementAsset> assets)
+        {
+            foreach (CrossingPlacementAsset saved in RecoveryAssets.Values)
+            {
+                CrossingPlacementAsset registered;
+                if (CrossingPlacementRegistry.TryGetAssetById(saved.Id, out registered))
+                    continue;
+                CrossingPlacementAsset rebound;
+                string error;
+                assets.Add(PedestrianCrossingToolkitState.TryRebindAssetForRoadReplacement(saved, out rebound, out error)
+                    ? rebound : saved);
+            }
+        }
+
 
         public static int GetRegisteredCrossingCount()
         {
@@ -61,6 +91,10 @@ namespace PedestrianCrossingToolkit
             CrossingPlacementAsset[] assets =
                 new CrossingPlacementAsset[CrossingPlacementRegistry.Count];
             int assetCount = CrossingPlacementRegistry.CopyTo(assets);
+            List<CrossingPlacementAsset> protectedAssets = new List<CrossingPlacementAsset>(assets);
+            AppendRecoveryAssets(protectedAssets);
+            assets = protectedAssets.ToArray();
+            assetCount = assets.Length;
             NetManager netManager = NetManager.instance;
 
             for (int i = 0; i < assetCount; i++)
@@ -68,13 +102,16 @@ namespace PedestrianCrossingToolkit
                 CrossingPlacementAsset asset = assets[i];
                 CrossingPlacementAsset liveAsset;
                 string rebindError;
-                if (asset.Id == 0
-                    || !PedestrianCrossingToolkitState.TryRebindAssetForRoadReplacement(
+                if (asset.Id == 0)
+                    continue;
+                if (!PedestrianCrossingToolkitState.TryRebindAssetForRoadReplacement(
                         asset,
                         out liveAsset,
                         out rebindError))
                 {
-                    continue;
+                    // Retain the saved protection boundary; BeginRoadReplacement
+                    // will refuse an unresolved crossing rather than silently omit it.
+                    liveAsset = asset;
                 }
 
                 AddTouchedRoadSegment(touched, liveAsset.Placement.SegmentId, netManager);
@@ -115,6 +152,26 @@ namespace PedestrianCrossingToolkit
             crossingCount = 0;
             message = string.Empty;
 
+            if (PedestrianCrossingToolkitState.IsCrossingWorkInProgress || HasActiveRoadReplacement)
+            {
+                message = "PCT is finishing crossing work; retry after it completes.";
+                return false;
+            }
+            if (RecoveryAssets.Count != 0)
+            {
+                message = "PCT retains unresolved crossing recovery records; reload before replacing more roads.";
+                return false;
+            }
+
+            foreach (RoadReplacementTransaction active in RoadReplacementTransactions.Values)
+            {
+                if (active.Phase != RoadReplacementCompleted && active.Phase != RoadReplacementFailed)
+                {
+                    message = "Another PCT road replacement is still in progress; retry after it completes.";
+                    return false;
+                }
+            }
+
             string validationError;
             if (!ValidateSegmentIds(segmentIds, out validationError))
             {
@@ -131,12 +188,18 @@ namespace PedestrianCrossingToolkit
                 CrossingPlacementAsset asset = registryAssets[i];
                 CrossingPlacementAsset liveAsset;
                 string rebindError;
-                if (asset.Id == 0
-                    || !PedestrianCrossingToolkitState.TryRebindAssetForRoadReplacement(
+                if (asset.Id == 0)
+                    continue;
+                if (!PedestrianCrossingToolkitState.TryRebindAssetForRoadReplacement(
                         asset,
                         out liveAsset,
                         out rebindError))
                 {
+                    if (TouchesAnySegment(asset, segmentIds))
+                    {
+                        message = "PCT could not validate a crossing on the requested road: " + rebindError;
+                        return false;
+                    }
                     continue;
                 }
 
@@ -160,16 +223,22 @@ namespace PedestrianCrossingToolkit
 
             int allocatedTransactionId = AllocateRoadReplacementTransactionId();
             var detached = new List<CrossingPlacementAsset>(affected.Count);
+            RoadReplacementTransaction transaction = new RoadReplacementTransaction(
+                allocatedTransactionId, affected.ToArray());
+            _activeRoadReplacement = transaction;
+            bool detachedAll = false;
             CrossingPathBuilder.BeginNetworkOnlyBuild();
             try
             {
                 for (int i = 0; i < affected.Count; i++)
                 {
                     CrossingPlacementAsset removed;
+                    RecoveryAssets[affected[i].Id] = affected[i];
                     if (!PedestrianCrossingToolkitState.TryDetachAssetForRoadReplacement(
                         affected[i].Id,
                         out removed))
                     {
+                        RecoveryAssets.Remove(affected[i].Id);
                         int[] restoredAssetIds = RestoreDetachedAssets(
                             detached,
                             new ushort[0],
@@ -186,10 +255,18 @@ namespace PedestrianCrossingToolkit
 
                     detached.Add(affected[i]);
                 }
+                detachedAll = true;
+            }
+            catch (Exception e)
+            {
+                message = "PCT could not detach the crossings safely; the road replacement must not proceed.";
+                Debug.LogError("[PedestrianCrossingToolkit] API crossing detach failed; recovery records retained: " + e);
+                return false;
             }
             finally
             {
                 CrossingPathBuilder.EndNetworkOnlyBuild();
+                if (!detachedAll) transaction.Phase = RoadReplacementFailed;
             }
 
             PedestrianCrossingToolkitState.CompleteRoadReplacementDetach(
@@ -198,8 +275,6 @@ namespace PedestrianCrossingToolkit
 
             transactionId = allocatedTransactionId;
             crossingCount = detached.Count;
-            RoadReplacementTransaction transaction =
-                new RoadReplacementTransaction(transactionId, detached.ToArray());
             RoadReplacementTransactions[transactionId] = transaction;
             QueueVisualRemoval(transaction);
             message = "PCT detached " + crossingCount + " crossing" +
@@ -245,7 +320,7 @@ namespace PedestrianCrossingToolkit
             CrossingPathBuilder.BeginNetworkOnlyBuild();
             try
             {
-                if (transaction.Phase != RoadReplacementReadyForNetworkReplacement)
+                if (transaction.Phase != RoadReplacementReadyForNetworkReplacement || CrossingPathBuilder.HasPendingNetworkRelease)
                 {
                     message = "PCT has not finished removing the affected crossing visuals.";
                     return false;
@@ -303,6 +378,17 @@ namespace PedestrianCrossingToolkit
                                      + networkError);
                 }
             }
+            catch (Exception e)
+            {
+                failedCount = transaction.Assets.Length;
+                transaction.RestoredCount = restoredCount;
+                transaction.FailedCount = failedCount;
+                message = "PCT crossing restoration failed; retained crossing records need recovery.";
+                transaction.Message = message;
+                transaction.Phase = RoadReplacementFailed;
+                Debug.LogError("[PedestrianCrossingToolkit] API crossing restoration interrupted: " + e);
+                return false;
+            }
             finally
             {
                 CrossingPathBuilder.EndNetworkOnlyBuild();
@@ -351,6 +437,8 @@ namespace PedestrianCrossingToolkit
             }
 
             phase = transaction.Phase;
+            if (phase == RoadReplacementReadyForNetworkReplacement && CrossingPathBuilder.HasPendingNetworkRelease)
+                phase = RoadReplacementRemovingVisuals;
             restoredCount = transaction.RestoredCount;
             failedCount = transaction.FailedCount;
             message = transaction.Message ?? string.Empty;
@@ -459,6 +547,8 @@ namespace PedestrianCrossingToolkit
                 transaction.Phase = RoadReplacementFailed;
             }
             RoadReplacementTransactions.Clear();
+            _activeRoadReplacement = null;
+            RecoveryAssets.Clear();
             _nextRoadReplacementTransactionId = 1;
         }
 
@@ -468,6 +558,8 @@ namespace PedestrianCrossingToolkit
             {
                 try
                 {
+                    if (transaction.Phase == RoadReplacementFailed)
+                        return;
                     if (!PedestrianCrossingToolkitState.Enabled)
                         throw new InvalidOperationException("PCT is no longer active in this city.");
 
@@ -505,6 +597,8 @@ namespace PedestrianCrossingToolkit
             {
                 try
                 {
+                    if (transaction.Phase == RoadReplacementFailed)
+                        return;
                     if (!PedestrianCrossingToolkitState.Enabled)
                         throw new InvalidOperationException("PCT is no longer active in this city.");
 
@@ -524,7 +618,7 @@ namespace PedestrianCrossingToolkit
                 }
                 catch (Exception e)
                 {
-                    transaction.FailedCount += Math.Max(1, restoredCount);
+                    transaction.FailedCount = transaction.Assets.Length;
                     transaction.Message = "PCT could not rebuild the restored crossing visuals: " +
                                           e.GetType().Name + ": " + e.Message;
                     transaction.Phase = RoadReplacementFailed;

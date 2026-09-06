@@ -1,4 +1,5 @@
 using UnityEngine;
+using System.Collections.Generic;
 
 namespace PedestrianCrossingToolkit
 {
@@ -189,6 +190,12 @@ namespace PedestrianCrossingToolkit
         public const float SubwayEntranceReuseRadius = 10f;
         private static CrossingLandingConnectorWorkOrder[] WorkOrderBuffer = new CrossingLandingConnectorWorkOrder[2048];
         private static CrossingLandingAccessAssetWorkOrder[] AccessAssetBuffer = new CrossingLandingAccessAssetWorkOrder[2048];
+        private static CrossingPointIndex _candidateIndex = new CrossingPointIndex(MaxConnectorDistance);
+        private static CrossingPointIndex _siblingIndex = new CrossingPointIndex(MaxConnectorDistance);
+        private static CrossingPointIndex _entranceIndex = new CrossingPointIndex(SubwayEntranceReuseRadius);
+        private static readonly List<int> NearbyIndices = new List<int>();
+        private static readonly Dictionary<int, List<int>> CandidateIndicesByAsset = new Dictionary<int, List<int>>();
+        private static readonly Dictionary<int, List<int>> AccessIndicesByAsset = new Dictionary<int, List<int>>();
         private static int _workOrderCount;
         private static int _accessAssetCount;
         private static int _revision;
@@ -226,7 +233,23 @@ namespace PedestrianCrossingToolkit
             int prefabReady = 0;
             int missingPrefab = 0;
 
+            _candidateIndex = new CrossingPointIndex(MaxConnectorDistance);
+            _siblingIndex = new CrossingPointIndex(MaxConnectorDistance);
+            _entranceIndex = new CrossingPointIndex(SubwayEntranceReuseRadius);
+            CandidateIndicesByAsset.Clear();
+            AccessIndicesByAsset.Clear();
+            for (int i = 0; i < Mathf.Min(candidateCount, candidates.Length); i++)
+            {
+                _candidateIndex.Add(candidates[i].WorldPosition, i);
+                AddAssetIndex(CandidateIndicesByAsset, candidates[i].AssetId, i);
+            }
             int max = Mathf.Min(linkCount, links.Length);
+            for (int i = 0; i < max; i++)
+            {
+                if (links[i].UsesLaneTargets) continue;
+                _siblingIndex.Add(GetLandingAccessPosition(links[i], true), i);
+                _siblingIndex.Add(GetLandingAccessPosition(links[i], false), i);
+            }
             for (int i = 0; i < max; i++)
             {
                 CrossingConnectivityLink link = links[i];
@@ -278,6 +301,12 @@ namespace PedestrianCrossingToolkit
         {
             _workOrderCount = 0;
             _accessAssetCount = 0;
+            CandidateIndicesByAsset.Clear();
+            AccessIndicesByAsset.Clear();
+            _candidateIndex = new CrossingPointIndex(MaxConnectorDistance);
+            _siblingIndex = new CrossingPointIndex(MaxConnectorDistance);
+            _entranceIndex = new CrossingPointIndex(SubwayEntranceReuseRadius);
+            NearbyIndices.Clear();
             _lastSummary = CrossingLandingConnectorSummary.Empty;
             AdvanceRevision();
         }
@@ -308,9 +337,11 @@ namespace PedestrianCrossingToolkit
         public static bool TryGetAccessAssetPosition(int assetId, string endpointName, CrossingLandingAccessAssetKind assetKind, out Vector3 position)
         {
             position = Vector3.zero;
-            for (int i = 0; i < _accessAssetCount; i++)
+            List<int> indices;
+            if (!AccessIndicesByAsset.TryGetValue(assetId, out indices)) return false;
+            for (int i = 0; i < indices.Count; i++)
             {
-                CrossingLandingAccessAssetWorkOrder order = AccessAssetBuffer[i];
+                CrossingLandingAccessAssetWorkOrder order = AccessAssetBuffer[indices[i]];
                 if (order.AssetId != assetId
                     || order.AssetKind != assetKind
                     || order.EndpointName != endpointName)
@@ -496,10 +527,12 @@ namespace PedestrianCrossingToolkit
             targetPosition = Vector3.zero;
             targetAssetId = 0;
             float bestDistance = MaxConnectorDistance;
-            int max = Mathf.Min(candidateCount, candidates.Length);
-            for (int i = 0; i < max; i++)
+            NearbyIndices.Clear();
+            _candidateIndex.AppendNearby(position, MaxConnectorDistance, NearbyIndices);
+            NearbyIndices.Sort();
+            for (int n = 0; n < NearbyIndices.Count; n++)
             {
-                CrossingConnectivityCandidate candidate = candidates[i];
+                CrossingConnectivityCandidate candidate = candidates[NearbyIndices[n]];
                 if (candidate.AssetId == link.AssetId)
                     continue;
 
@@ -520,10 +553,11 @@ namespace PedestrianCrossingToolkit
             targetPosition = Vector3.zero;
             targetAssetId = 0;
             float bestDistance = MaxConnectorDistance;
-            int max = Mathf.Min(candidateCount, candidates.Length);
-            for (int i = 0; i < max; i++)
+            List<int> indices;
+            if (!CandidateIndicesByAsset.TryGetValue(assetId, out indices)) return false;
+            for (int i = 0; i < indices.Count; i++)
             {
-                CrossingConnectivityCandidate candidate = candidates[i];
+                CrossingConnectivityCandidate candidate = candidates[indices[i]];
                 if (candidate.AssetId != assetId)
                     continue;
 
@@ -544,8 +578,13 @@ namespace PedestrianCrossingToolkit
             targetPosition = Vector3.zero;
             targetAssetId = 0;
             float bestDistance = MaxConnectorDistance;
-            for (int i = 0; i < linkCount; i++)
+            NearbyIndices.Clear();
+            _siblingIndex.AppendNearby(position, MaxConnectorDistance, NearbyIndices);
+            NearbyIndices.Sort();
+            for (int n = 0; n < NearbyIndices.Count; n++)
             {
+                int i = NearbyIndices[n];
+                if (n > 0 && i == NearbyIndices[n - 1]) continue;
                 if (i == sourceIndex)
                     continue;
 
@@ -583,9 +622,12 @@ namespace PedestrianCrossingToolkit
         {
             reusableEntrance = default(CrossingLandingAccessAssetWorkOrder);
             float bestDistance = SubwayEntranceReuseRadius;
-            for (int i = 0; i < _accessAssetCount; i++)
+            NearbyIndices.Clear();
+            _entranceIndex.AppendNearby(position, SubwayEntranceReuseRadius, NearbyIndices);
+            NearbyIndices.Sort();
+            for (int n = 0; n < NearbyIndices.Count; n++)
             {
-                CrossingLandingAccessAssetWorkOrder order = AccessAssetBuffer[i];
+                CrossingLandingAccessAssetWorkOrder order = AccessAssetBuffer[NearbyIndices[n]];
                 if (order.AssetKind != CrossingLandingAccessAssetKind.SubwayEntrance
                     || order.AssetId == assetId
                     || order.ReusesExistingEntrance)
@@ -639,6 +681,27 @@ namespace PedestrianCrossingToolkit
                    || kind == CrossingConnectivityLinkKind.JunctionBridgeApproach;
         }
 
+        private static void AddAssetIndex(Dictionary<int, List<int>> index, int assetId, int entry)
+        {
+            List<int> entries;
+            if (!index.TryGetValue(assetId, out entries))
+            {
+                entries = new List<int>();
+                index.Add(assetId, entries);
+            }
+            entries.Add(entry);
+        }
+
+        private static void AddIndexedAccessAsset(CrossingLandingAccessAssetWorkOrder order)
+        {
+            ManagerCapacity.EnsureArrayCapacity(ref AccessAssetBuffer, _accessAssetCount + 1);
+            AccessAssetBuffer[_accessAssetCount] = order;
+            AddAssetIndex(AccessIndicesByAsset, order.AssetId, _accessAssetCount);
+            if (order.AssetKind == CrossingLandingAccessAssetKind.SubwayEntrance && !order.ReusesExistingEntrance)
+                _entranceIndex.Add(order.Position, _accessAssetCount);
+            _accessAssetCount++;
+        }
+
         private static void AddWorkOrder(CrossingLandingConnectorWorkOrder order)
         {
             ManagerCapacity.EnsureArrayCapacity(ref WorkOrderBuffer, _workOrderCount + 1);
@@ -676,7 +739,7 @@ namespace PedestrianCrossingToolkit
             if (assetKind == CrossingLandingAccessAssetKind.SubwayEntrance
                 && TryGetReusableSubwayEntrance(link.AssetId, accessPosition, out reusableEntrance))
             {
-                AccessAssetBuffer[_accessAssetCount++] = new CrossingLandingAccessAssetWorkOrder(
+                AddIndexedAccessAsset(new CrossingLandingAccessAssetWorkOrder(
                     link.AssetId,
                     accessSegmentId,
                     link.Kind,
@@ -691,12 +754,12 @@ namespace PedestrianCrossingToolkit
                     reusableEntrance.FootprintWidth,
                     true,
                     reusableEntrance.AssetId,
-                    reusableEntrance.EndpointName);
+                    reusableEntrance.EndpointName));
                 LogSubwayEntranceReuse(link.AssetId, endpointName, reusableEntrance, accessPosition);
                 return;
             }
 
-            AccessAssetBuffer[_accessAssetCount++] = new CrossingLandingAccessAssetWorkOrder(link.AssetId, accessSegmentId, link.Kind, endpointName, assetKind, accessKind, targetKind, deckPosition, accessPosition, facing, length, width);
+            AddIndexedAccessAsset(new CrossingLandingAccessAssetWorkOrder(link.AssetId, accessSegmentId, link.Kind, endpointName, assetKind, accessKind, targetKind, deckPosition, accessPosition, facing, length, width));
             if (assetKind == CrossingLandingAccessAssetKind.SubwayEntrance
                 && !RoadPlacementRules.IsNonRoadGradeSeparatedPlacementTarget(accessSegmentId))
             {
@@ -780,7 +843,7 @@ namespace PedestrianCrossingToolkit
             if (assetKind == CrossingLandingAccessAssetKind.SubwayEntrance
                 && TryGetReusableSubwayEntrance(link.AssetId, accessPosition, out reusableEntrance))
             {
-                AccessAssetBuffer[_accessAssetCount++] = new CrossingLandingAccessAssetWorkOrder(
+                AddIndexedAccessAsset(new CrossingLandingAccessAssetWorkOrder(
                     link.AssetId,
                     accessSegmentId,
                     link.Kind,
@@ -795,13 +858,13 @@ namespace PedestrianCrossingToolkit
                     reusableEntrance.FootprintWidth,
                     true,
                     reusableEntrance.AssetId,
-                    reusableEntrance.EndpointName);
+                    reusableEntrance.EndpointName));
                 LogSubwayEntranceReuse(link.AssetId, endpointName, reusableEntrance, accessPosition);
                 accessPosition = reusableEntrance.Position;
                 return true;
             }
 
-            AccessAssetBuffer[_accessAssetCount++] = new CrossingLandingAccessAssetWorkOrder(link.AssetId, accessSegmentId, link.Kind, endpointName, assetKind, accessKind, CrossingLandingConnectorTargetKind.PedestrianLane, deckPosition, accessPosition, facing, length, width);
+            AddIndexedAccessAsset(new CrossingLandingAccessAssetWorkOrder(link.AssetId, accessSegmentId, link.Kind, endpointName, assetKind, accessKind, CrossingLandingConnectorTargetKind.PedestrianLane, deckPosition, accessPosition, facing, length, width));
             if (IsSubwayKind(link.Kind)
                 && !RoadPlacementRules.IsNonRoadGradeSeparatedPlacementTarget(accessSegmentId))
             {
@@ -1099,10 +1162,11 @@ namespace PedestrianCrossingToolkit
 
             exitDirection.Normalize();
             float bestDistance = MaxConnectorDistance;
-            int max = Mathf.Min(candidateCount, candidates.Length);
-            for (int i = 0; i < max; i++)
+            List<int> indices;
+            if (!CandidateIndicesByAsset.TryGetValue(assetId, out indices)) return false;
+            for (int i = 0; i < indices.Count; i++)
             {
-                CrossingConnectivityCandidate candidate = candidates[i];
+                CrossingConnectivityCandidate candidate = candidates[indices[i]];
                 if (candidate.AssetId != assetId)
                     continue;
 
@@ -1504,7 +1568,8 @@ namespace PedestrianCrossingToolkit
 
             ref NetNode node = ref netManager.m_nodes.m_buffer[nodeId];
             int count = 0;
-            int segmentCount = node.CountSegments();
+            // Native node slots are sparse after a segment is removed.
+            const int segmentCount = 8;
             for (int i = 0; i < segmentCount; i++)
             {
                 ushort segmentId = node.GetSegment(i);

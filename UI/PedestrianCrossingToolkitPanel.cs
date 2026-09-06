@@ -16,8 +16,11 @@ namespace PedestrianCrossingToolkit
         private const float MonitoringPanelHeight = 32f;
         private const string NormalPanelTitle = "Pedestrian Crossing Toolkit";
         private const string MonitoringPanelTitle = "Snapshotting your city";
+        private const string SharedLauncherToolbarName = "UnifiedTransitToolkitLauncherToolbar";
+        private static UIPanel _sharedLauncherToolbar;
         private static bool _uiPointerCaptured;
         private static int _uiBlockUntilFrame;
+        private static bool _uiBlockPending;
         private static int _ignoreRightClickCloseFrame = -1;
 
         private UIPanel _titleBar;
@@ -423,8 +426,9 @@ namespace PedestrianCrossingToolkit
                 _uiPointerCaptured = false;
             }
 
-            if (_uiBlockUntilFrame >= Time.frameCount)
+            if (_uiBlockPending && unchecked((uint)(_uiBlockUntilFrame - Time.frameCount)) < 0x80000000u)
                 return true;
+            _uiBlockPending = false;
 
             bool overToolkit = IsMouseOverToolkitComponent();
             if (overToolkit)
@@ -825,7 +829,8 @@ namespace PedestrianCrossingToolkit
 
         private static void ShieldToolInput(bool capture)
         {
-            _uiBlockUntilFrame = Mathf.Max(_uiBlockUntilFrame, Time.frameCount + 2);
+            _uiBlockUntilFrame = unchecked(Time.frameCount + 2);
+            _uiBlockPending = true;
             if (capture)
                 _uiPointerCaptured = true;
         }
@@ -863,23 +868,52 @@ namespace PedestrianCrossingToolkit
                    && pointY <= top + height + UiShieldPadding;
         }
 
+        private static UIPanel GetSharedLauncherToolbar()
+        {
+            UIView view = UIView.GetAView();
+            if (view == null)
+            {
+                _sharedLauncherToolbar = null;
+                return null;
+            }
+            if (_sharedLauncherToolbar != null && _sharedLauncherToolbar.transform.parent == view.transform
+                && _sharedLauncherToolbar.name == SharedLauncherToolbarName)
+                return _sharedLauncherToolbar;
+
+            _sharedLauncherToolbar = null;
+            // The shared toolbar's GetOrCreate attaches it directly to this view.
+            // Inspect those UI children only: UIView.Find scans scene components,
+            // including every failed lookup when the shared toolbar is absent.
+            for (int i = 0; i < view.transform.childCount; i++)
+            {
+                UIPanel candidate = view.transform.GetChild(i).GetComponent<UIPanel>();
+                if (candidate != null && candidate.name == SharedLauncherToolbarName)
+                {
+                    _sharedLauncherToolbar = candidate;
+                    break;
+                }
+            }
+            return _sharedLauncherToolbar;
+        }
+
         private static bool IsMouseOverToolkitComponent()
         {
             return IsMouseOverComponent(Instance)
                    || IsMouseOverComponent(PedestrianCrossingAutoScanInstructionsPanel.Instance)
                    || IsMouseOverComponent(PedestrianCrossingToolkitLauncherButton.Instance)
-                   || IsMouseOverComponent(UnifiedTransitLauncherToolbar.Current)
+                   || IsMouseOverComponent(GetSharedLauncherToolbar())
                    || PedestrianCrossingRoadsTab.IsMouseOverUi();
         }
 
         private static bool IsToolkitComponentOrChild(UIComponent component)
         {
+            UIPanel sharedToolbar = GetSharedLauncherToolbar();
             while (component != null)
             {
                 if (component == Instance
                     || component == PedestrianCrossingAutoScanInstructionsPanel.Instance
                     || component == PedestrianCrossingToolkitLauncherButton.Instance
-                    || component == UnifiedTransitLauncherToolbar.Current
+                    || component == sharedToolbar
                     || PedestrianCrossingRoadsTab.IsToolkitComponentOrChild(component))
                     return true;
 

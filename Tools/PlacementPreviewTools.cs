@@ -83,6 +83,8 @@ namespace PedestrianCrossingToolkit
         private static readonly List<ushort> StationSegmentCache = new List<ushort>();
         private static bool _stationSegmentCacheReady;
         private static int _stationSegmentCachedSegmentCount;
+        private static uint _stationSegmentCachedBuildIndex;
+        private static uint _monorailStationCachedBuildIndex;
 
         private struct CachedVanillaCrossingPoint
         {
@@ -277,6 +279,10 @@ namespace PedestrianCrossingToolkit
 
         public static void ResetVanillaCrossingCache()
         {
+            StationSegmentCache.Clear();
+            MonorailStationWithRoadSegmentCache.Clear();
+            _stationSegmentCacheReady = false;
+            _monorailStationWithRoadCacheReady = false;
             VanillaCrossingCache.Clear();
             VanillaCrossingCacheRefreshBuffer.Clear();
             _hasVanillaCrossingNetworkSignature = false;
@@ -464,7 +470,8 @@ namespace PedestrianCrossingToolkit
         private static void RefreshStationSegmentCache(NetManager netManager)
         {
             if (_stationSegmentCacheReady
-                && _stationSegmentCachedSegmentCount == netManager.m_segmentCount)
+                && _stationSegmentCachedSegmentCount == netManager.m_segmentCount
+                && _stationSegmentCachedBuildIndex == CurrentNetworkBuildIndex)
             {
                 return;
             }
@@ -484,6 +491,7 @@ namespace PedestrianCrossingToolkit
             }
 
             _stationSegmentCachedSegmentCount = netManager.m_segmentCount;
+            _stationSegmentCachedBuildIndex = CurrentNetworkBuildIndex;
             _stationSegmentCacheReady = true;
         }
 
@@ -594,7 +602,8 @@ namespace PedestrianCrossingToolkit
         private static void RefreshMonorailStationWithRoadSegmentCache(NetManager netManager)
         {
             if (_monorailStationWithRoadCacheReady
-                && _monorailStationWithRoadCachedSegmentCount == netManager.m_segmentCount)
+                && _monorailStationWithRoadCachedSegmentCount == netManager.m_segmentCount
+                && _monorailStationCachedBuildIndex == CurrentNetworkBuildIndex)
             {
                 return;
             }
@@ -614,6 +623,7 @@ namespace PedestrianCrossingToolkit
             }
 
             _monorailStationWithRoadCachedSegmentCount = netManager.m_segmentCount;
+            _monorailStationCachedBuildIndex = CurrentNetworkBuildIndex;
             _monorailStationWithRoadCacheReady = true;
         }
 
@@ -1376,6 +1386,11 @@ namespace PedestrianCrossingToolkit
                 cache.Add(new CachedVanillaCrossingPoint(segmentId, crossingPoint));
         }
 
+        private static uint CurrentNetworkBuildIndex
+        {
+            get { return SimulationManager.instance == null ? 0u : SimulationManager.instance.m_currentBuildIndex; }
+        }
+
         private static VanillaCrossingNetworkSignature BuildVanillaCrossingNetworkSignature(NetManager netManager)
         {
             if (netManager == null)
@@ -1386,6 +1401,7 @@ namespace PedestrianCrossingToolkit
                 int hash = 17;
                 hash = (hash * 31) + netManager.m_segmentCount;
                 hash = (hash * 31) + netManager.m_nodeCount;
+                hash = (hash * 31) + (int)CurrentNetworkBuildIndex;
                 return new VanillaCrossingNetworkSignature(netManager.m_segmentCount, netManager.m_nodeCount, hash);
             }
         }

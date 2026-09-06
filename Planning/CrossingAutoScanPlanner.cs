@@ -140,7 +140,7 @@ namespace PedestrianCrossingToolkit
         private const int GridTraversalLimit = 65536;
         private const int NetNodeSegmentSlotCount = 8;
         private const int ContinuousRoadTraversalLimit = 128;
-        private const int SnapshotPathUnitTraversalLimit = 128;
+        private const int SnapshotPathUnitsPerSlice = 128;
         private const float JunctionPathPlacementFraction = 0.10f;
         private const float CrossingTraversalRadius = 2.75f;
         private const float CrossingTraversalDirectionDot = 0.25f;
@@ -267,6 +267,15 @@ namespace PedestrianCrossingToolkit
             private const int CandidatesPerFrame = 64;
             private const int NetworkRecordsPerFrame = 512;
             private const int CitizenInstancesPerFrame = 512;
+            private readonly HashSet<uint> _snapshotVisitedUnits = new HashSet<uint>();
+            private int _snapshotInstanceIndex = -1;
+            private uint _snapshotCitizen;
+            private uint _snapshotRoot;
+            private uint _snapshotNextUnit;
+            private int _snapshotFirstPosition;
+            private PathUnit.Position _snapshotPrevious;
+            private bool _snapshotHasPrevious;
+            private bool _snapshotReadAny;
             private const float SlowBatchWarningMs = 50f;
             private ObservationCandidate[] _candidates = new ObservationCandidate[InitialObservationCandidateCapacity];
             private readonly bool[] _continuousRoadSegmentsVisited = new bool[ushort.MaxValue + 1];
@@ -671,7 +680,7 @@ namespace PedestrianCrossingToolkit
                     0,
                     MaxPlannedPlacements);
                 int placedJunctionCrossings = 0;
-                for (int i = 0; i < count && placedJunctionCrossings < junctionPlacementBudget; i++)
+                for (int i = 0; i < count && (placedJunctionCrossings < junctionPlacementBudget || !accumulator.HasPlacementCapacity()); i++)
                 {
                     ObservationCandidate candidate = _candidates[ObservationOrderBuffer[i]];
                     accumulator.ScannedNodes++;
@@ -679,11 +688,6 @@ namespace PedestrianCrossingToolkit
                         continue;
 
                     accumulator.Hotspots++;
-                    if (!accumulator.HasPlacementCapacity())
-                    {
-                        accumulator.NoteBeneficialCandidateBeyondLimit();
-                        continue;
-                    }
 
                     CrossingPlacementRecord placement;
                     CrossingPlacementPlan plan;
@@ -693,9 +697,10 @@ namespace PedestrianCrossingToolkit
                             candidate.CrossingPoint.WorldPosition,
                             accumulator,
                             out placement,
-                            out plan)
-                        && accumulator.TryAddPathRankedJunctionPlacement(placement, plan))
+                            out plan))
                     {
+                        if (!accumulator.TryAddPathRankedJunctionPlacement(placement, plan))
+                            continue;
                         placedJunctionCrossings++;
                         PedestrianCrossingLog.Advanced(
                             "[PedestrianCrossingToolkit] Auto scan junction proposal accepted: node="
@@ -755,11 +760,6 @@ namespace PedestrianCrossingToolkit
                         continue;
 
                     accumulator.Hotspots++;
-                    if (!accumulator.HasPlacementCapacity())
-                    {
-                        accumulator.NoteBeneficialCandidateBeyondLimit();
-                        continue;
-                    }
 
                     if (!accumulator.TryAddPlacement(
                         candidate.SuggestedPlacement,
@@ -790,11 +790,6 @@ namespace PedestrianCrossingToolkit
                         continue;
 
                     accumulator.Hotspots++;
-                    if (!accumulator.HasPlacementCapacity())
-                    {
-                        accumulator.NoteBeneficialCandidateBeyondLimit();
-                        continue;
-                    }
 
                     CrossingPlacementRecord signalPlacement;
                     CrossingPlacementPlan signalPlan;
@@ -828,11 +823,6 @@ namespace PedestrianCrossingToolkit
                         continue;
 
                     accumulator.Hotspots++;
-                    if (!accumulator.HasPlacementCapacity())
-                    {
-                        accumulator.NoteBeneficialCandidateBeyondLimit();
-                        continue;
-                    }
 
                     CrossingPlacementRecord gradePlacement;
                     CrossingPlacementPlan gradePlan;
@@ -988,8 +978,14 @@ namespace PedestrianCrossingToolkit
                         continue;
                     }
 
-                    if (SnapshotCitizenPath(instance, pathManager, netManager))
+                    bool complete;
+                    if (SnapshotCitizenPath(instanceIndex, instance, pathManager, netManager, out complete))
                         _snapshottedCitizenPaths++;
+                    if (!complete)
+                    {
+                        nextInstanceIndex = instanceIndex;
+                        return false;
+                    }
                 }
 
                 nextInstanceIndex = end;
@@ -997,72 +993,89 @@ namespace PedestrianCrossingToolkit
             }
 
             private bool SnapshotCitizenPath(
+                int instanceIndex,
                 CitizenInstance instance,
                 PathManager pathManager,
-                NetManager netManager)
+                NetManager netManager,
+                out bool complete)
             {
-                uint pathUnitId = instance.m_path;
-                int firstPositionIndex = instance.m_pathPositionIndex >> 1;
-                int traversedUnits = 0;
-                bool hasPrevious = false;
-                bool readAnyPosition = false;
-                PathUnit.Position previous = default(PathUnit.Position);
-                _currentCitizenJunctionHits.Clear();
-
-                while (pathUnitId != 0u && traversedUnits++ < SnapshotPathUnitTraversalLimit)
+                complete = true;
+                if (_snapshotInstanceIndex == instanceIndex
+                    && (_snapshotRoot != instance.m_path || _snapshotCitizen != instance.m_citizen))
                 {
-                    if (pathUnitId >= pathManager.m_pathUnits.m_size)
-                        break;
+                    // Do not combine two routes if vanilla changed ownership between slices.
+                    _snapshotInstanceIndex = -1;
+                    _snapshotVisitedUnits.Clear();
+                    _currentCitizenJunctionHits.Clear();
+                    return false;
+                }
+                if (_snapshotInstanceIndex != instanceIndex)
+                {
+                    _snapshotInstanceIndex = instanceIndex;
+                    _snapshotCitizen = instance.m_citizen;
+                    _snapshotRoot = instance.m_path;
+                    _snapshotNextUnit = instance.m_path;
+                    _snapshotFirstPosition = instance.m_pathPositionIndex >> 1;
+                    _snapshotHasPrevious = false;
+                    _snapshotReadAny = false;
+                    _snapshotVisitedUnits.Clear();
+                    _currentCitizenJunctionHits.Clear();
+                }
 
-                    PathUnit pathUnit = pathManager.m_pathUnits.m_buffer[pathUnitId];
+                int units = 0;
+                uint limit = Math.Min(pathManager.m_pathUnits.m_size,
+                    (uint)pathManager.m_pathUnits.m_buffer.Length);
+                while (_snapshotNextUnit != 0u && units++ < SnapshotPathUnitsPerSlice)
+                {
+                    uint id = _snapshotNextUnit;
+                    if (id >= limit || !_snapshotVisitedUnits.Add(id))
+                    {
+                        _snapshotNextUnit = 0;
+                        break;
+                    }
+                    PathUnit pathUnit = pathManager.m_pathUnits.m_buffer[id];
                     if ((pathUnit.m_pathFindFlags & PathUnit.FLAG_READY) == 0
                         || (pathUnit.m_pathFindFlags & PathUnit.FLAG_FAILED) != 0)
                     {
+                        _snapshotNextUnit = 0;
                         break;
                     }
-
-                    int positionCount = Math.Min(pathUnit.m_positionCount, (byte)PathUnit.MAX_POSITIONS);
-                    int startPosition = traversedUnits == 1
-                        ? Mathf.Clamp(firstPositionIndex, 0, positionCount)
-                        : 0;
-                    for (int positionIndex = startPosition; positionIndex < positionCount; positionIndex++)
+                    int count = Math.Min(pathUnit.m_positionCount, (byte)PathUnit.MAX_POSITIONS);
+                    for (int i = Mathf.Clamp(_snapshotFirstPosition, 0, count); i < count; i++)
                     {
                         PathUnit.Position current;
-                        if (!pathUnit.GetPosition(positionIndex, out current)
-                            || !IsPedestrianPathPosition(current, netManager))
+                        if (!pathUnit.GetPosition(i, out current) || !IsPedestrianPathPosition(current, netManager))
                         {
-                            hasPrevious = false;
+                            _snapshotHasPrevious = false;
                             continue;
                         }
-
-                        readAnyPosition = true;
-                        if (hasPrevious)
-                            RecordJunctionPathCrossing(previous, current, netManager);
-
-                        previous = current;
-                        hasPrevious = true;
+                        _snapshotReadAny = true;
+                        if (_snapshotHasPrevious)
+                            RecordJunctionPathCrossing(_snapshotPrevious, current, netManager);
+                        _snapshotPrevious = current;
+                        _snapshotHasPrevious = true;
                     }
-
-                    uint nextPathUnitId = pathUnit.m_nextPathUnit;
-                    if (nextPathUnitId == pathUnitId)
-                        break;
-
-                    pathUnitId = nextPathUnitId;
-                    firstPositionIndex = 0;
+                    _snapshotNextUnit = pathUnit.m_nextPathUnit;
+                    _snapshotFirstPosition = 0;
                 }
-
+                if (_snapshotNextUnit != 0u)
+                {
+                    complete = false;
+                    return false;
+                }
                 foreach (KeyValuePair<ushort, JunctionPathHit> pair in _currentCitizenJunctionHits)
                 {
                     int count;
                     _junctionPathCitizenCounts.TryGetValue(pair.Key, out count);
                     _junctionPathCitizenCounts[pair.Key] = count + 1;
-
                     ObservationCandidate candidate = _candidates[pair.Value.CandidateIndex];
                     candidate.PlannedPathCrossings++;
                     _candidates[pair.Value.CandidateIndex] = candidate;
                 }
-
-                return readAnyPosition;
+                _snapshotInstanceIndex = -1;
+                _snapshotVisitedUnits.Clear();
+                _currentCitizenJunctionHits.Clear();
+                return _snapshotReadAny;
             }
 
             private void RecordJunctionPathCrossing(
@@ -1448,21 +1461,10 @@ namespace PedestrianCrossingToolkit
                 if (removalAssetId == 0 || HasRemoval(removalAssetId))
                     return false;
 
-                if (RemovalCount >= RemovalAssetIds.Length)
-                {
-                    Capped++;
-                    return false;
-                }
-
                 if (!TryAddPlacement(placement, plan, removalAssetId))
                     return false;
 
                 return TryAddRemoval(removalAssetId);
-            }
-
-            public void NoteBeneficialCandidateBeyondLimit()
-            {
-                Capped++;
             }
 
             public bool TryAddRemoval(int assetId)
@@ -2331,11 +2333,6 @@ namespace PedestrianCrossingToolkit
                         continue;
 
                     accumulator.Hotspots++;
-                    if (!accumulator.HasPlacementCapacity())
-                    {
-                        accumulator.NoteBeneficialCandidateBeyondLimit();
-                        continue;
-                    }
 
                     CrossingPlacementRecord placement;
                     CrossingPlacementPlan plan;
@@ -2391,11 +2388,6 @@ namespace PedestrianCrossingToolkit
                     continue;
 
                 accumulator.Hotspots++;
-                if (!accumulator.HasPlacementCapacity())
-                {
-                    accumulator.NoteBeneficialCandidateBeyondLimit();
-                    continue;
-                }
 
                 CrossingPlacementRecord signalPlacement;
                 CrossingPlacementPlan signalPlan;
@@ -2433,11 +2425,6 @@ namespace PedestrianCrossingToolkit
                     continue;
 
                 accumulator.Hotspots++;
-                if (!accumulator.HasPlacementCapacity())
-                {
-                    accumulator.NoteBeneficialCandidateBeyondLimit();
-                    continue;
-                }
 
                 ushort nodeId = asset.Plan.TargetNodeId != 0
                     ? asset.Plan.TargetNodeId

@@ -7,6 +7,13 @@ namespace PedestrianCrossingToolkit
     public static class PedestrianCrossingToolkitState
     {
         public static bool Enabled { get; set; }
+        internal static bool IsCrossingWorkInProgress
+        {
+            get { return _deferredLoadRebuildPending || _stagedAutoScanBuildActive
+                || _autoScanObservation != null || _autoScanFinalizing || _scheduledValidationRunning
+                || _networkDependencyScanRunning || CrossingPathBuilder.HasPendingNetworkRelease; }
+        }
+
         public static PedestrianToolMode ActiveMode { get; private set; }
         public static CrossingPlacementRecord LastPreview { get; private set; }
         public static CrossingPlacementRecord LastPlacement { get; private set; }
@@ -75,6 +82,7 @@ namespace PedestrianCrossingToolkit
         private static CrossingPlacementAsset[] NetworkDependencyAssetBuffer = new CrossingPlacementAsset[NetworkDependencyAssetBufferSize];
         private static int[] NetworkDependencyRemovalIds = new int[NetworkDependencyAssetBufferSize];
         private static int[] DeferredNetworkDependencyRemovalIds = new int[NetworkDependencyAssetBufferSize];
+        private static CrossingPlacementAsset[] LoadRebuildAssetBuffer = new CrossingPlacementAsset[ValidationAssetBufferSize];
         private static CrossingPlacementAsset[] ValidationAssetBuffer = new CrossingPlacementAsset[ValidationAssetBufferSize];
         private static int[] ValidationAssetIdBuffer = new int[ValidationAssetIdBufferSize];
         private static int[] ValidationProblemAssetIds = new int[ValidationProblemAssetBufferSize];
@@ -95,7 +103,10 @@ namespace PedestrianCrossingToolkit
         private static string _stagedAutoScanBuildCompletionStatus = string.Empty;
         private static readonly bool[] AutoScanPreviewAccepted = new bool[CrossingAutoScanPlanner.MaxPlannedPlacements];
         private static readonly Dictionary<int, NetworkDependencySnapshot> NetworkDependencySnapshots = new Dictionary<int, NetworkDependencySnapshot>();
-        private static readonly List<int> StaleNetworkDependencySnapshotIds = new List<int>();
+        private static readonly HashSet<int> StaleNetworkDependencySnapshotIds = new HashSet<int>();
+        private static NetworkDependencySnapshot NetworkDependencyScratch = new NetworkDependencySnapshot();
+        private static int _networkDependencySnapshotRevision = -1;
+        private static int _networkDependencySnapshotCount;
         private static int _validationProblemAssetCount;
         private static int _validationProblemRevision;
         private static uint _nextScheduledValidationFrame;
@@ -307,6 +318,11 @@ namespace PedestrianCrossingToolkit
 
         public static CrossingAutoScanSummary ApplyAutoScanPreview()
         {
+            if (PedestrianCrossingToolkitApi.HasActiveRoadReplacement || _deferredLoadRebuildPending || _stagedAutoScanBuildActive || CrossingPathBuilder.HasPendingNetworkRelease)
+            {
+                StatusMessage = "PCT is finishing the current crossing rebuild. Resume simulation if path cleanup is waiting.";
+                return CrossingAutoScanSummary.Empty;
+            }
             if (!HasAutoScanPreviewPlan)
             {
                 StatusMessage = "No Auto Scan preview is waiting to apply.";
@@ -552,6 +568,12 @@ namespace PedestrianCrossingToolkit
         public static bool ConfirmPlacement(CrossingPlacementRecord placement, out string blockedMessage)
         {
             blockedMessage = string.Empty;
+            if (PedestrianCrossingToolkitApi.HasActiveRoadReplacement || _deferredLoadRebuildPending || _stagedAutoScanBuildActive || CrossingPathBuilder.HasPendingNetworkRelease)
+            {
+                blockedMessage = "PCT is finishing the current crossing rebuild. Resume simulation if path cleanup is waiting.";
+                StatusMessage = blockedMessage;
+                return false;
+            }
             CrossingPlacementPlan plan = CrossingPlacementPlanner.Build(placement);
             if (!plan.IsValid)
             {
@@ -734,6 +756,12 @@ namespace PedestrianCrossingToolkit
         public static bool ConfirmPlacements(CrossingPlacementRecord[] placements, int count, out string blockedMessage)
         {
             blockedMessage = string.Empty;
+            if (PedestrianCrossingToolkitApi.HasActiveRoadReplacement || _deferredLoadRebuildPending || _stagedAutoScanBuildActive || CrossingPathBuilder.HasPendingNetworkRelease)
+            {
+                blockedMessage = "PCT is finishing the current crossing rebuild. Resume simulation if path cleanup is waiting.";
+                StatusMessage = blockedMessage;
+                return false;
+            }
             if (placements == null || count <= 0)
             {
                 blockedMessage = "No junction crossings were detected.";
@@ -748,7 +776,7 @@ namespace PedestrianCrossingToolkit
             CrossingPlacementRecord lastPlacement = CrossingPlacementRecord.None;
             string firstRejection = string.Empty;
             bool didReplaceAny = false;
-            for (int i = 0; i < count; i++)
+            for (int i = 0; i < count && i < placements.Length; i++)
             {
                 CrossingPlacementRecord placement = placements[i];
                 if (!placement.IsValid || placement.SegmentId == 0)
@@ -866,9 +894,9 @@ namespace PedestrianCrossingToolkit
 
         public static bool BeginAutoScanObservation()
         {
-            if (_stagedAutoScanBuildActive)
+            if (PedestrianCrossingToolkitApi.HasActiveRoadReplacement || _stagedAutoScanBuildActive || _deferredLoadRebuildPending || CrossingPathBuilder.HasPendingNetworkRelease)
             {
-                StatusMessage = "Auto Scan is still applying the previous crossing batch.";
+                StatusMessage = "PCT is finishing the current crossing rebuild. Resume simulation if path cleanup is waiting.";
                 PedestrianCrossingToolkitPanel.RefreshInstance();
                 return false;
             }
@@ -1044,6 +1072,9 @@ namespace PedestrianCrossingToolkit
 
         public static void ProcessScheduledCrossingValidation()
         {
+            if (PedestrianCrossingToolkitApi.HasActiveRoadReplacement)
+                return;
+
             PruneValidationProblemAssets();
 
             if (_scheduledValidationRunning)
@@ -1312,6 +1343,9 @@ namespace PedestrianCrossingToolkit
 
         public static void ProcessNetworkDependencyChanges(float realTimeDelta)
         {
+            if (PedestrianCrossingToolkitApi.HasActiveRoadReplacement)
+                return;
+
             if (_stagedAutoScanBuildActive)
                 return;
 
@@ -1458,8 +1492,16 @@ namespace PedestrianCrossingToolkit
 
         private static void StartNetworkDependencyScan()
         {
-            EnsureRegistryProcessingCapacity();
-            _networkDependencyScanAssetCount = CrossingPlacementRegistry.CopyTo(NetworkDependencyAssetBuffer);
+            if (_networkDependencySnapshotRevision != CrossingPlacementRegistry.Revision)
+            {
+                EnsureRegistryProcessingCapacity();
+                int previousCount = _networkDependencySnapshotCount;
+                _networkDependencySnapshotCount = CrossingPlacementRegistry.CopyTo(NetworkDependencyAssetBuffer);
+                for (int i = _networkDependencySnapshotCount; i < previousCount; i++)
+                    NetworkDependencyAssetBuffer[i] = CrossingPlacementAsset.None;
+                _networkDependencySnapshotRevision = CrossingPlacementRegistry.Revision;
+            }
+            _networkDependencyScanAssetCount = _networkDependencySnapshotCount;
             _networkDependencyScanAssetIndex = 0;
             _networkDependencyScanRemovalCount = 0;
             StaleNetworkDependencySnapshotIds.Clear();
@@ -1478,7 +1520,6 @@ namespace PedestrianCrossingToolkit
             {
                 int index = _networkDependencyScanAssetIndex++;
                 CrossingPlacementAsset asset = NetworkDependencyAssetBuffer[index];
-                NetworkDependencyAssetBuffer[index] = CrossingPlacementAsset.None;
                 if (asset.Id == 0)
                     return;
 
@@ -1508,20 +1549,25 @@ namespace PedestrianCrossingToolkit
                 return;
             }
 
-            for (int i = 0; i < StaleNetworkDependencySnapshotIds.Count; i++)
-                NetworkDependencySnapshots.Remove(StaleNetworkDependencySnapshotIds[i]);
+            foreach (int assetId in StaleNetworkDependencySnapshotIds)
+                NetworkDependencySnapshots.Remove(assetId);
             StaleNetworkDependencySnapshotIds.Clear();
 
             int removalCount = _networkDependencyScanRemovalCount;
-            ResetNetworkDependencyScan();
+            ResetNetworkDependencyScan(true);
             if (removalCount > 0)
                 ScheduleNetworkDependencyCleanup(removalCount);
         }
 
-        private static void ResetNetworkDependencyScan()
+        private static void ResetNetworkDependencyScan(bool retainSnapshot = false)
         {
-            for (int i = _networkDependencyScanAssetIndex; i < _networkDependencyScanAssetCount; i++)
-                NetworkDependencyAssetBuffer[i] = CrossingPlacementAsset.None;
+            if (!retainSnapshot)
+            {
+                for (int i = 0; i < _networkDependencySnapshotCount; i++)
+                    NetworkDependencyAssetBuffer[i] = CrossingPlacementAsset.None;
+                _networkDependencySnapshotCount = 0;
+                _networkDependencySnapshotRevision = -1;
+            }
 
             _networkDependencyScanTimer = 0f;
             _networkDependencyScanRunning = false;
@@ -1536,8 +1582,8 @@ namespace PedestrianCrossingToolkit
             if (HasNetworkPlacementChanged(asset, out reason))
                 return true;
 
-            NetworkDependencySnapshot current;
-            if (!TryBuildNetworkDependencySnapshot(asset, out current))
+            NetworkDependencySnapshot current = NetworkDependencyScratch;
+            if (!FillNetworkDependencySnapshot(asset, current))
             {
                 reason = string.Empty;
                 PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Network dependency snapshot unavailable during scan; keeping crossing: asset="
@@ -1557,6 +1603,7 @@ namespace PedestrianCrossingToolkit
             }
 
             NetworkDependencySnapshots[asset.Id] = current;
+            NetworkDependencyScratch = previous ?? new NetworkDependencySnapshot();
             reason = string.Empty;
             return false;
         }
@@ -1828,7 +1875,14 @@ namespace PedestrianCrossingToolkit
 
         private static bool TryBuildNetworkDependencySnapshot(CrossingPlacementAsset asset, out NetworkDependencySnapshot snapshot)
         {
-            snapshot = new NetworkDependencySnapshot { AssetId = asset.Id };
+            snapshot = new NetworkDependencySnapshot();
+            return FillNetworkDependencySnapshot(asset, snapshot);
+        }
+
+        private static bool FillNetworkDependencySnapshot(CrossingPlacementAsset asset, NetworkDependencySnapshot snapshot)
+        {
+            snapshot.AssetId = asset.Id;
+            snapshot.SegmentCount = 0;
             NetManager netManager = NetManager.instance;
             if (netManager == null || netManager.m_segments == null || netManager.m_nodes == null)
                 return false;
@@ -2449,6 +2503,12 @@ namespace PedestrianCrossingToolkit
 
         public static void ConfirmRemoval(CrossingPlacementRecord placement)
         {
+            if (PedestrianCrossingToolkitApi.HasActiveRoadReplacement)
+            {
+                StatusMessage = "PCT is restoring crossings for a road replacement. Retry when it finishes.";
+                return;
+            }
+
             CrossingPlacementAsset removed;
             if (!CrossingPlacementRegistry.RemoveAt(placement, out removed))
             {
@@ -2466,6 +2526,12 @@ namespace PedestrianCrossingToolkit
 
         public static bool ConfirmRemovalByAssetId(int assetId)
         {
+            if (PedestrianCrossingToolkitApi.HasActiveRoadReplacement)
+            {
+                StatusMessage = "PCT is restoring crossings for a road replacement. Retry when it finishes.";
+                return false;
+            }
+
             CrossingPlacementAsset removed;
             if (assetId == 0 || !CrossingPlacementRegistry.RemoveById(assetId, out removed))
             {
@@ -2762,16 +2828,23 @@ namespace PedestrianCrossingToolkit
             bool didReplace;
             SignalRoadStateSnapshot signalRoadState =
                 CrossingPathBuilder.CaptureSignalRoadState(placement, adjustedPlan);
-            CrossingPlacementAsset restored = CrossingPlacementRegistry.AddOrReplace(
-                placement,
-                adjustedPlan,
-                signalRoadState,
-                out replaced,
-                out didReplace);
+            CrossingPlacementAsset restored;
+            PedestrianCrossingToolkitApi.ForgetRecoveryAsset(previous.Id);
+            try
+            {
+                restored = CrossingPlacementRegistry.AddOrReplace(
+                    placement, adjustedPlan, signalRoadState, out replaced, out didReplace);
+            }
+            catch
+            {
+                PedestrianCrossingToolkitApi.RetainRecoveryAsset(previous);
+                throw;
+            }
             RememberNetworkDependencySnapshot(restored, replaced);
             if (didReplace)
                 CleanupRemovedAssetForIncrementalSync(replaced, "api-road-replacement-restore");
 
+            PedestrianCrossingToolkitApi.ForgetRecoveryAsset(previous.Id);
             restoredAssetId = restored.Id;
             LastPlacement = placement;
             LastPlacementPlan = adjustedPlan;
@@ -2784,6 +2857,15 @@ namespace PedestrianCrossingToolkit
             int restoredCount,
             string reason)
         {
+            if (restoredCount > 0 && CrossingPathBuilder.HasPendingNetworkRelease)
+            {
+                CrossingApplicationEngine.Refresh(reason);
+                SyncPathExecutionBoundary(reason);
+                CrossingPlacementRegistry.SetAutoRebuildBuiltStructures(true);
+                ScheduleBuiltStructureRebuildOnLoad();
+                StatusMessage = "Crossing recovery will finish after pending path cleanup.";
+                return;
+            }
             if (restoredCount > 0)
                 SyncBuiltStructuresForChangedAssets(reason, restoredAssetIds, restoredCount);
             else
@@ -2897,6 +2979,16 @@ namespace PedestrianCrossingToolkit
 
         public static void ClearPlacements()
         {
+            if (PedestrianCrossingToolkitApi.HasActiveRoadReplacement)
+            {
+                StatusMessage = "PCT is restoring crossings for a road replacement. Retry when it finishes.";
+                return;
+            }
+
+            CancelStagedAutoScanBuild();
+            ResetDeferredLoadRebuildBatch();
+            _deferredLoadRebuildPending = false;
+            PedestrianCrossingToolkitApi.ResetForLevelChange();
             ClearAutoScanPreviewPlan(false);
             ClearDeferredNetworkDependencyCleanup();
             CrossingApplicationEngine.RevertAppliedOperations("clear-change");
@@ -3065,6 +3157,10 @@ namespace PedestrianCrossingToolkit
                 return;
             }
 
+            // A rebuild must never adopt or overlap a path whose removal is pending.
+            if (CrossingPathBuilder.HasPendingNetworkRelease)
+                return;
+
             _deferredLoadRebuildElapsed += Mathf.Max(0f, realTimeDelta);
             if (_deferredLoadRebuildElapsed < LoadRebuildMinimumDelaySeconds)
                 return;
@@ -3083,7 +3179,18 @@ namespace PedestrianCrossingToolkit
             TrafficManagerInteropAllowed = true;
             if (!_deferredLoadRebuildBatchActive)
             {
-                StartDeferredLoadRebuildBatch();
+                try { StartDeferredLoadRebuildBatch(); }
+                catch (System.Exception e)
+                {
+                    for (int i = 0; i < _deferredLoadRebuildAssetCount; i++)
+                        AddValidationProblemAsset(LoadRebuildAssetBuffer[i].Id);
+                    CrossingPathBuilder.CancelBuildBatch();
+                    _deferredLoadRebuildPending = false;
+                    ResetDeferredLoadRebuildBatch();
+                    StatusMessage = "Saved crossings could not be rebuilt; check crossing validation.";
+                    Debug.LogError("[PedestrianCrossingToolkit] Could not start saved crossing rebuild: " + e);
+                    return;
+                }
                 if (_deferredLoadRebuildBatchActive)
                 {
                     _deferredLoadRebuildManaged =
@@ -3114,7 +3221,8 @@ namespace PedestrianCrossingToolkit
             }
 
             EnsureRegistryProcessingCapacity();
-            _deferredLoadRebuildAssetCount = CrossingPlacementRegistry.CopyTo(ValidationAssetBuffer);
+            ManagerCapacity.EnsureArrayCapacity(ref LoadRebuildAssetBuffer, CrossingPlacementRegistry.Count);
+            _deferredLoadRebuildAssetCount = CrossingPlacementRegistry.CopyTo(LoadRebuildAssetBuffer);
             _deferredLoadRebuildAssetIndex = 0;
             _deferredLoadRebuildBuilt = 0;
             _deferredLoadRebuildSkipped = 0;
@@ -3132,13 +3240,19 @@ namespace PedestrianCrossingToolkit
             {
                 if (_deferredLoadRebuildAssetIndex < _deferredLoadRebuildAssetCount)
                 {
-                    CrossingPlacementAsset asset = ValidationAssetBuffer[_deferredLoadRebuildAssetIndex++];
+                    CrossingPlacementAsset asset = LoadRebuildAssetBuffer[_deferredLoadRebuildAssetIndex];
+                    _deferredLoadRebuildAssetIndex++;
                     if (asset.Id > 0)
                     {
                         float assetStartedAt = Time.realtimeSinceStartup;
                         int skipped;
                         _deferredLoadRebuildBuilt += CrossingPathBuilder.BuildPathsForAsset(asset.Id, out skipped);
                         _deferredLoadRebuildSkipped += skipped;
+                        if (CrossingPathBuilder.LastBuildHadFailure)
+                        {
+                            AddValidationProblemAsset(asset.Id);
+                            StatusMessage = "Some saved crossings could not be built completely; check the marked crossings.";
+                        }
                         float assetElapsedMs = (Time.realtimeSinceStartup - assetStartedAt) * 1000f;
                         _deferredLoadRebuildWorkElapsedMs += assetElapsedMs;
                         if (assetElapsedMs >= LoadRebuildSlowAssetWarningMs)
@@ -3179,9 +3293,13 @@ namespace PedestrianCrossingToolkit
             }
             catch (System.Exception e)
             {
-                CrossingPathBuilder.EndBuildBatch();
+                // The current slice and every unprocessed asset need validation.
+                for (int i = Mathf.Max(0, _deferredLoadRebuildAssetIndex - 1); i < _deferredLoadRebuildAssetCount; i++)
+                    AddValidationProblemAsset(LoadRebuildAssetBuffer[i].Id);
+                CrossingPathBuilder.CancelBuildBatch();
                 _deferredLoadRebuildPending = false;
                 ResetDeferredLoadRebuildBatch();
+                StatusMessage = "Some saved crossings could not be rebuilt; check crossing validation.";
                 Debug.LogError("[PedestrianCrossingToolkit] Built structure rebuild on load failed: " + e);
                 return true;
             }
@@ -3207,6 +3325,8 @@ namespace PedestrianCrossingToolkit
             if (_deferredLoadRebuildBatchActive)
                 CrossingPathBuilder.CancelBuildBatch();
 
+            for (int i = 0; i < _deferredLoadRebuildAssetCount && i < LoadRebuildAssetBuffer.Length; i++)
+                LoadRebuildAssetBuffer[i] = CrossingPlacementAsset.None;
             _deferredLoadRebuildAssetCount = 0;
             _deferredLoadRebuildAssetIndex = 0;
             _deferredLoadRebuildBuilt = 0;
@@ -3287,6 +3407,12 @@ namespace PedestrianCrossingToolkit
             catch (System.Exception exception)
             {
                 Debug.LogError("[PedestrianCrossingToolkit] Could not start staged Auto Scan build; retaining registered crossings for validation: " + exception);
+                CrossingPathBuilder.CancelBuildBatch();
+                CrossingPlacementRegistry.SetAutoRebuildBuiltStructures(CrossingPlacementRegistry.Count > 0);
+                StatusMessage = "Auto Scan registered its results, but construction could not start. Crossings need attention.";
+                _pendingAutoScanCompletionMessage += "\n\nConstruction could not start. Registered crossings are retained for recovery and validation.";
+                for (int i = 0; i < _stagedAutoScanBuildAssetCount; i++)
+                    AddValidationProblemAsset(StagedAutoScanBuildAssetIds[i]);
                 ResetStagedAutoScanBuildState();
                 return;
             }
@@ -3318,6 +3444,11 @@ namespace PedestrianCrossingToolkit
             if (!_stagedAutoScanBuildActive)
                 return true;
 
+            if (CrossingPathBuilder.HasPendingNetworkRelease)
+            {
+                StatusMessage = "Crossing construction is waiting for path cleanup. Resume simulation if paused.";
+                return false;
+            }
             if (_stagedAutoScanBuildAssetIndex >= _stagedAutoScanBuildAssetCount)
                 return true;
 
@@ -3337,11 +3468,21 @@ namespace PedestrianCrossingToolkit
                     int skipped;
                     _stagedAutoScanBuildBuilt += CrossingPathBuilder.BuildPathsForAsset(assetId, out skipped);
                     _stagedAutoScanBuildSkipped += skipped;
+                    string buildError = "native path construction was refused";
+                    if (CrossingPathBuilder.LastBuildHadFailure
+                        || !CrossingPathBuilder.TryValidateRoadReplacementNetworkAsset(assetId, out buildError)
+                        || !CrossingPathBuilder.TryValidateRoadReplacementVisualAsset(assetId, out buildError))
+                    {
+                        _stagedAutoScanBuildFailed++;
+                        AddValidationProblemAsset(assetId);
+                        Debug.LogWarning("[PedestrianCrossingToolkit] Auto Scan crossing requires attention: asset=" + assetId + " reason=" + buildError);
+                    }
                 }
             }
             catch (System.Exception exception)
             {
                 _stagedAutoScanBuildFailed++;
+                AddValidationProblemAsset(assetId);
                 Debug.LogError("[PedestrianCrossingToolkit] Staged Auto Scan asset build failed: asset="
                                + assetId
                                + " index="
@@ -3391,6 +3532,14 @@ namespace PedestrianCrossingToolkit
             CrossingPlacementRegistry.SetAutoRebuildBuiltStructures(CrossingPlacementRegistry.Count > 0);
             float wallElapsedMs = (Time.realtimeSinceStartup - _stagedAutoScanBuildStartedAt) * 1000f;
             string completionStatus = _stagedAutoScanBuildCompletionStatus;
+            if (_stagedAutoScanBuildFailed > 0)
+            {
+                string failure = "Construction reported " + _stagedAutoScanBuildFailed
+                    + " failure" + (_stagedAutoScanBuildFailed == 1 ? string.Empty : "s")
+                    + ". Registered crossings are retained; check the affected crossings before continuing.";
+                completionStatus = "Auto Scan construction needs attention. " + failure;
+                _pendingAutoScanCompletionMessage += "\n\n" + failure;
+            }
             PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Staged Auto Scan build completed: reason="
                       + _stagedAutoScanBuildReason
                       + " assets="
@@ -3474,7 +3623,6 @@ namespace PedestrianCrossingToolkit
                 for (int i = 0; i < changedAssetCount; i++)
                 {
                     int assetId = changedAssetIds[i];
-                    changedAssetIds[i] = 0;
                     if (assetId <= 0)
                         continue;
 
@@ -3488,6 +3636,11 @@ namespace PedestrianCrossingToolkit
                     int assetSkipped;
                     built += CrossingPathBuilder.BuildPathsForAsset(assetId, out assetSkipped);
                     skipped += assetSkipped;
+                    if (CrossingPathBuilder.LastBuildHadFailure)
+                    {
+                        AddValidationProblemAsset(assetId);
+                        StatusMessage = "Some crossings could not be built completely; check the marked crossings.";
+                    }
                 }
 
                 CrossingPlacementRegistry.SetAutoRebuildBuiltStructures(CrossingPlacementRegistry.Count > 0);
@@ -3513,6 +3666,13 @@ namespace PedestrianCrossingToolkit
             }
             catch (System.Exception e)
             {
+                for (int i = 0; i < changedAssetCount && i < changedAssetIds.Length; i++)
+                {
+                    AddValidationProblemAsset(changedAssetIds[i]);
+                    CrossingPathBuilder.MarkAssetBuildFailure(changedAssetIds[i]);
+                }
+                StatusMessage = "Some crossings could not be built completely; check crossing validation.";
+                CrossingPathBuilder.CancelBuildBatch();
                 Debug.LogError("[PedestrianCrossingToolkit] Incremental batch built structure sync failed: reason="
                                + reason
                                + " changedAssets="
@@ -3522,7 +3682,18 @@ namespace PedestrianCrossingToolkit
             }
             finally
             {
-                CrossingPathBuilder.EndBuildBatch();
+                try { CrossingPathBuilder.EndBuildBatch(); }
+                catch (System.Exception e)
+                {
+                    CrossingPathBuilder.CancelBuildBatch();
+                    for (int i = 0; i < changedAssetCount && i < changedAssetIds.Length; i++)
+                    {
+                        AddValidationProblemAsset(changedAssetIds[i]);
+                        CrossingPathBuilder.MarkAssetBuildFailure(changedAssetIds[i]);
+                    }
+                    StatusMessage = "Crossing construction could not finish; check crossing validation.";
+                    Debug.LogError("[PedestrianCrossingToolkit] Could not finish incremental crossing batch: " + e);
+                }
                 for (int i = 0; i < changedAssetCount && i < changedAssetIds.Length; i++)
                     changedAssetIds[i] = 0;
             }
@@ -3537,12 +3708,33 @@ namespace PedestrianCrossingToolkit
             try
             {
                 bool fullRebuild = rebuildExisting || pruned > 0 || changedAssetId <= 0;
-                int removed = fullRebuild ? CrossingPathBuilder.ClearBuiltPaths("sync-" + reason) : 0;
+                int removed = 0;
+                if (fullRebuild)
+                {
+                    CancelStagedAutoScanBuild();
+                    ResetDeferredLoadRebuildBatch();
+                    removed = CrossingPathBuilder.ClearBuiltPaths("sync-" + reason);
+                    CrossingPlacementRegistry.SetAutoRebuildBuiltStructures(CrossingPlacementRegistry.Count > 0);
+                    ScheduleBuiltStructureRebuildOnLoad();
+                    return;
+                }
+                if (CrossingPathBuilder.HasPendingNetworkRelease)
+                {
+                    CrossingPlacementAsset pendingAsset;
+                    if (CrossingPlacementRegistry.TryGetAssetById(changedAssetId, out pendingAsset))
+                        StageBuiltStructuresForChangedAssets(reason, new[] { changedAssetId }, 1);
+                    return;
+                }
                 int skipped;
                 int built = fullRebuild
                     ? CrossingPathBuilder.BuildPaths(out skipped)
                     : CrossingPathBuilder.BuildPathsForAsset(changedAssetId, out skipped);
                 CrossingPlacementRegistry.SetAutoRebuildBuiltStructures(CrossingPlacementRegistry.Count > 0);
+                if (CrossingPathBuilder.LastBuildHadFailure)
+                {
+                    AddValidationProblemAsset(changedAssetId);
+                    StatusMessage = "The crossing could not be built completely; check the marked crossing.";
+                }
                 PedestrianCrossingLog.Advanced("[PedestrianCrossingToolkit] Synced built structures: reason="
                           + reason
                           + " mode="
@@ -3564,6 +3756,9 @@ namespace PedestrianCrossingToolkit
             }
             catch (System.Exception e)
             {
+                CrossingPathBuilder.MarkAssetBuildFailure(changedAssetId);
+                AddValidationProblemAsset(changedAssetId);
+                StatusMessage = "The crossing could not be built completely; check the marked crossing.";
                 Debug.LogError("[PedestrianCrossingToolkit] Built structure sync failed: reason="
                                + reason
                                + " error="

@@ -83,7 +83,7 @@ namespace PedestrianCrossingToolkit
         private readonly List<CachedJunctionExclusionZone> _exclusionZoneCache = new List<CachedJunctionExclusionZone>();
         private readonly List<CachedJunctionExclusionZone> _exclusionZoneBuildBuffer = new List<CachedJunctionExclusionZone>();
         private readonly List<Vector3[]> _exclusionZoneVisiblePolygons = new List<Vector3[]>();
-        private readonly List<ushort> _pctSignalExclusionNodes = new List<ushort>();
+        private readonly HashSet<ushort> _pctSignalExclusionNodes = new HashSet<ushort>();
         private readonly List<ushort> _signalGuideJoinCache = new List<ushort>();
         private readonly List<ushort> _signalGuideJoinBuildBuffer = new List<ushort>();
         private ExclusionZoneCacheKind _exclusionZoneCacheKind = ExclusionZoneCacheKind.None;
@@ -101,6 +101,8 @@ namespace PedestrianCrossingToolkit
         private int _signalGuideJoinCachedSegmentCount;
         private int _signalGuideJoinCachedRegistryRevision;
         private int _pctSignalExclusionNodesRevision = -1;
+        private float _signalGuideJoinCachedAt;
+        private float _exclusionZoneCachedAt;
 
         private enum ExclusionZoneCacheKind
         {
@@ -1369,7 +1371,8 @@ namespace PedestrianCrossingToolkit
 
             return _signalGuideJoinCachedNodeCount != netManager.m_nodeCount
                    || _signalGuideJoinCachedSegmentCount != netManager.m_segmentCount
-                   || _signalGuideJoinCachedRegistryRevision != CrossingPlacementRegistry.Revision;
+                   || _signalGuideJoinCachedRegistryRevision != CrossingPlacementRegistry.Revision
+                   || Time.realtimeSinceStartup - _signalGuideJoinCachedAt >= 5f;
         }
 
         private void StartSignalGuideJoinCacheBuild()
@@ -1417,6 +1420,7 @@ namespace PedestrianCrossingToolkit
             _signalGuideJoinCachedSegmentCount = netManager.m_segmentCount;
             _signalGuideJoinCachedRegistryRevision = CrossingPlacementRegistry.Revision;
             _signalGuideJoinCacheReady = true;
+            _signalGuideJoinCachedAt = Time.realtimeSinceStartup;
             _signalGuideJoinCacheBuildInProgress = false;
         }
 
@@ -1521,11 +1525,7 @@ namespace PedestrianCrossingToolkit
             if (_signalGuideWorldMesh == null)
                 return;
 
-            _signalGuideWorldMesh.Clear();
-            _signalGuideWorldMesh.vertices = vertices.ToArray();
-            _signalGuideWorldMesh.uv = uvs.ToArray();
-            _signalGuideWorldMesh.triangles = triangles.ToArray();
-            _signalGuideWorldMesh.RecalculateBounds();
+            _signalGuideWorldVisual.GetComponent<PreviewQuadMeshOwner>().Upload(vertices, uvs, null, triangles);
         }
 
         private static float GetSignalGuideIconWorldSize(Camera camera)
@@ -1570,7 +1570,8 @@ namespace PedestrianCrossingToolkit
             _signalGuideWorldMesh.name = "PCT Signal Placement Targets Mesh";
 
             MeshFilter filter = _signalGuideWorldVisual.AddComponent<MeshFilter>();
-            filter.mesh = _signalGuideWorldMesh;
+            filter.sharedMesh = _signalGuideWorldMesh;
+            _signalGuideWorldVisual.AddComponent<PreviewQuadMeshOwner>().Initialize(_signalGuideWorldMesh);
             MeshRenderer renderer = _signalGuideWorldVisual.AddComponent<MeshRenderer>();
             renderer.material = GetSignalGuideWorldMaterial();
         }
@@ -1756,7 +1757,8 @@ namespace PedestrianCrossingToolkit
             return _exclusionZoneCacheKind != kind
                    || _exclusionZoneCachedNodeCount != netManager.m_nodeCount
                    || _exclusionZoneCachedSegmentCount != netManager.m_segmentCount
-                   || _exclusionZoneCachedRegistryRevision != CrossingPlacementRegistry.Revision;
+                   || _exclusionZoneCachedRegistryRevision != CrossingPlacementRegistry.Revision
+                   || Time.realtimeSinceStartup - _exclusionZoneCachedAt >= 5f;
         }
 
         private void StartExclusionZoneCacheBuild(ExclusionZoneCacheKind kind)
@@ -1810,6 +1812,7 @@ namespace PedestrianCrossingToolkit
             _exclusionZoneCachedSegmentCount = netManager.m_segmentCount;
             _exclusionZoneCachedRegistryRevision = CrossingPlacementRegistry.Revision;
             _exclusionZoneCacheReady = true;
+            _exclusionZoneCachedAt = Time.realtimeSinceStartup;
             _exclusionZoneCacheBuildInProgress = false;
             InvalidateExclusionZoneCache();
         }
@@ -1845,11 +1848,7 @@ namespace PedestrianCrossingToolkit
 
         private bool IsPctSignalExclusionNode(ushort nodeId)
         {
-            for (int i = 0; i < _pctSignalExclusionNodes.Count; i++)
-                if (_pctSignalExclusionNodes[i] == nodeId)
-                    return true;
-
-            return false;
+            return _pctSignalExclusionNodes.Contains(nodeId);
         }
 
         private void ClearExclusionZoneCache()
@@ -1858,6 +1857,7 @@ namespace PedestrianCrossingToolkit
             _exclusionZoneBuildBuffer.Clear();
             _exclusionZoneVisiblePolygons.Clear();
             _pctSignalExclusionNodes.Clear();
+            _pctSignalExclusionNodesRevision = -1;
             _exclusionZoneCacheKind = ExclusionZoneCacheKind.None;
             _exclusionZoneBuildKind = ExclusionZoneCacheKind.None;
             _exclusionZoneCacheReady = false;
@@ -2108,11 +2108,7 @@ namespace PedestrianCrossingToolkit
                 return;
             }
 
-            _exclusionZoneWorldMesh.Clear();
-            _exclusionZoneWorldMesh.vertices = vertices;
-            _exclusionZoneWorldMesh.colors = colors;
-            _exclusionZoneWorldMesh.triangles = triangles;
-            _exclusionZoneWorldMesh.RecalculateBounds();
+            _exclusionZoneWorldVisual.GetComponent<PreviewQuadMeshOwner>().Upload(vertices, null, colors, triangles);
         }
 
         private bool TryBuildExclusionZoneUnionMesh(List<Vector3[]> polygons, Vector3 lift, out Vector3[] vertices, out Color[] colors, out int[] triangles)
@@ -2280,7 +2276,8 @@ namespace PedestrianCrossingToolkit
             _exclusionZoneWorldMesh.name = "PCT Exclusion Zone Preview Mesh";
 
             MeshFilter filter = _exclusionZoneWorldVisual.AddComponent<MeshFilter>();
-            filter.mesh = _exclusionZoneWorldMesh;
+            filter.sharedMesh = _exclusionZoneWorldMesh;
+            _exclusionZoneWorldVisual.AddComponent<PreviewQuadMeshOwner>().Initialize(_exclusionZoneWorldMesh);
 
             MeshRenderer renderer = _exclusionZoneWorldVisual.AddComponent<MeshRenderer>();
             renderer.material = GetExclusionZoneWorldMaterial();
